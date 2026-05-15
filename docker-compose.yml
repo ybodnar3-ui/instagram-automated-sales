@@ -26,7 +26,10 @@ services:
     command: celery -A workers.celery_app beat --loglevel=info
     env_file: .env
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
