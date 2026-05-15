@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, ForeignKey, Text, UniqueConstraint
 from database import Base
 
 
@@ -21,10 +21,11 @@ class BotConfig(Base):
 
 class DailyStats(Base):
     __tablename__ = "daily_stats"
+    __table_args__ = (UniqueConstraint("account_id", "date", name="uq_account_date"),)
 
     id = Column(Integer, primary_key=True, index=True)
-    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
-    date = Column(Date, nullable=False)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
     messages_sent = Column(Integer, default=0, nullable=False)
     messages_received = Column(Integer, default=0, nullable=False)
     new_conversations = Column(Integer, default=0, nullable=False)

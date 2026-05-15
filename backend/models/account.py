@@ -1,6 +1,6 @@
 import enum
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum as SAEnum
+from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Enum as SAEnum
 from database import Base
 
 
@@ -14,12 +14,12 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(100), unique=True, nullable=False)
-    session_data = Column(String, nullable=True)  # Fernet-encrypted JSON
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    session_data = Column(Text, nullable=True)  # Fernet-encrypted JSON
     is_active = Column(Boolean, default=True, nullable=False)
     daily_limit = Column(Integer, default=80, nullable=False)
     messages_today = Column(Integer, default=0, nullable=False)
-    last_reset_date = Column(DateTime, nullable=True)
-    bot_status = Column(SAEnum(BotStatus), default=BotStatus.active, nullable=False)
+    last_reset_date = Column(DateTime(timezone=True), nullable=True)
+    bot_status = Column(SAEnum(BotStatus), default=BotStatus.active, nullable=False, index=True)
     pause_reason = Column(String(200), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
