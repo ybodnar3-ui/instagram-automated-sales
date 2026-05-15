@@ -7,7 +7,10 @@ from models.stats import BotConfig
 
 
 def get_warmup_limit(account: Account) -> int:
-    days_old = (datetime.now(timezone.utc) - account.created_at).days
+    created = account.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    days_old = (datetime.now(timezone.utc) - created).days
     if days_old <= 3:
         return 15
     if days_old <= 7:
