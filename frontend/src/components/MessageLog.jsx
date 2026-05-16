@@ -1,4 +1,10 @@
-export default function MessageLog({ messages }) {
+function formatTime(sent_at) {
+  if (!sent_at) return ''
+  const d = new Date(sent_at)
+  return isNaN(d.getTime()) ? '' : d.toLocaleTimeString()
+}
+
+export default function MessageLog({ messages = [] }) {
   return (
     <div className="flex flex-col gap-2 max-h-96 overflow-y-auto p-2">
       {messages.map((m) => (
@@ -11,7 +17,7 @@ export default function MessageLog({ messages }) {
           }`}
         >
           {m.content}
-          <div className="text-[10px] opacity-60 mt-1">{new Date(m.sent_at).toLocaleTimeString()}</div>
+          <div className="text-[10px] opacity-60 mt-1">{formatTime(m.sent_at)}</div>
         </div>
       ))}
     </div>

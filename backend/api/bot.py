@@ -1,12 +1,14 @@
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 from database import get_db
 from models.account import Account, BotStatus
 from models.stats import BotConfig
 
 router = APIRouter()
+
+ALLOWED_MODELS = {"claude-haiku-3-5-20251001", "claude-sonnet-4-6"}
 
 
 class ConfigUpdate(BaseModel):
@@ -19,6 +21,27 @@ class ConfigUpdate(BaseModel):
     max_delay_sec: Optional[float] = None
     llm_model: Optional[str] = None
     warmup_mode: Optional[bool] = None
+
+    @field_validator("llm_model")
+    @classmethod
+    def validate_llm_model(cls, v):
+        if v is not None and v not in ALLOWED_MODELS:
+            raise ValueError(f"llm_model must be one of: {', '.join(sorted(ALLOWED_MODELS))}")
+        return v
+
+    @field_validator("max_messages_per_day")
+    @classmethod
+    def validate_daily_limit(cls, v):
+        if v is not None and not (1 <= v <= 200):
+            raise ValueError("max_messages_per_day must be between 1 and 200")
+        return v
+
+    @field_validator("min_delay_sec", "max_delay_sec")
+    @classmethod
+    def validate_delay(cls, v):
+        if v is not None and v < 1:
+            raise ValueError("delay must be at least 1 second")
+        return v
 
 
 @router.post("/bot/{account_id}/pause")
