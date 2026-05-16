@@ -17,6 +17,8 @@ class BotConfig(Base):
     max_delay_sec = Column(Float, default=25.0, nullable=False)
     llm_model = Column(String(100), default="claude-haiku-3-5-20251001", nullable=False)
     warmup_mode = Column(Boolean, default=True, nullable=False)
+    outbound_daily_limit = Column(Integer, default=5, nullable=False)
+    outbound_default_message = Column(Text, default="", nullable=False)
 
 
 class DailyStats(Base):
