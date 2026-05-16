@@ -1,12 +1,22 @@
+import logging
 from datetime import date, timedelta
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from database import get_db
+from models.account import Account
 from models.stats import DailyStats
 from models.conversation import Conversation
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _get_account_or_404(account_id: int, db: Session) -> Account:
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return account
 
 
 @router.get("/stats/{account_id}/daily")
@@ -15,6 +25,7 @@ def get_daily_stats(
     days: int = Query(7, ge=1, le=90),
     db: Session = Depends(get_db),
 ):
+    _get_account_or_404(account_id, db)
     since = date.today() - timedelta(days=days - 1)
     stats = (
         db.query(DailyStats)
@@ -22,6 +33,7 @@ def get_daily_stats(
         .order_by(DailyStats.date.asc())
         .all()
     )
+    logger.debug("account=%d daily stats requested days=%d rows=%d", account_id, days, len(stats))
     return [
         {
             "date": s.date.isoformat(),
@@ -37,6 +49,7 @@ def get_daily_stats(
 
 @router.get("/stats/{account_id}/summary")
 def get_summary(account_id: int, db: Session = Depends(get_db)):
+    _get_account_or_404(account_id, db)
     agg = db.query(
         func.coalesce(func.sum(DailyStats.messages_sent), 0).label("sent"),
         func.coalesce(func.sum(DailyStats.messages_received), 0).label("received"),

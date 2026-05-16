@@ -1,11 +1,15 @@
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from database import get_db
-from models.conversation import Conversation
+from models.conversation import Conversation, ConvStage
 from models.message import Message
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+VALID_STAGES = {s.value for s in ConvStage}
 
 
 @router.get("/conversations/{account_id}")
@@ -14,6 +18,11 @@ def list_conversations(
     stage: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
+    if stage is not None and stage not in VALID_STAGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid stage '{stage}'. Must be one of: {', '.join(sorted(VALID_STAGES))}",
+        )
     query = db.query(Conversation).filter(Conversation.account_id == account_id)
     if stage:
         query = query.filter(Conversation.stage == stage)
@@ -78,6 +87,7 @@ def takeover_conversation(thread_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.bot_active = False
     db.commit()
+    logger.info("thread=%s taken over by human", thread_id)
     return {"status": "taken_over", "thread_id": thread_id}
 
 
@@ -90,4 +100,5 @@ def restore_bot(thread_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.bot_active = True
     db.commit()
+    logger.info("thread=%s bot restored", thread_id)
     return {"status": "restored", "thread_id": thread_id}

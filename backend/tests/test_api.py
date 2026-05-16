@@ -33,7 +33,9 @@ client = TestClient(app)
 def test_health_endpoint():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    data = response.json()
+    assert data["status"] == "ok"
+    assert "db" in data
 
 
 def test_list_accounts_empty():
@@ -64,19 +66,19 @@ def test_list_conversations_returns_empty_list():
     assert response.json() == []
 
 
-def test_daily_stats_returns_empty_list():
-    response = client.get("/api/stats/1/daily?days=7")
-    assert response.status_code == 200
-    assert response.json() == []
+def test_daily_stats_nonexistent_account_returns_404():
+    response = client.get("/api/stats/999/daily?days=7")
+    assert response.status_code == 404
 
 
-def test_summary_returns_zeros_for_new_account():
-    response = client.get("/api/stats/1/summary")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["total_messages_sent"] == 0
-    assert data["total_conversations"] == 0
-    assert data["conversion_rate_pct"] == 0.0
+def test_summary_nonexistent_account_returns_404():
+    response = client.get("/api/stats/999/summary")
+    assert response.status_code == 404
+
+
+def test_conversations_invalid_stage_returns_422():
+    response = client.get("/api/conversations/1?stage=invalid")
+    assert response.status_code == 422
 
 
 def test_get_config_nonexistent_returns_404():

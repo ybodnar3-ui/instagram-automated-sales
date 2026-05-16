@@ -1,8 +1,9 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from config import setup_logging
-from database import Base, engine
+from database import Base, engine, SessionLocal
 from api import accounts, bot, conversations, stats
 
 setup_logging()
@@ -32,4 +33,11 @@ app.include_router(stats.router, prefix="/api", tags=["stats"])
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    try:
+        db = SessionLocal()
+        db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        db.close()
+        return {"status": "ok", "db": "ok"}
+    except Exception as exc:
+        logger.error("Health check DB ping failed: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "error", "db": "unreachable"})

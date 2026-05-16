@@ -3,6 +3,7 @@ import random
 import time
 from datetime import datetime, timezone, date
 from celery import Celery
+from celery.exceptions import MaxRetriesExceededError
 from config import settings, setup_logging
 
 setup_logging()
@@ -175,7 +176,10 @@ def poll_account_dms(self, account_id: int):
             "poll_account_dms account_id=%d failed (retry %d/%d): %s",
             account_id, self.request.retries, self.max_retries, exc, exc_info=True,
         )
-        self.retry(exc=exc, countdown=30)
+        try:
+            self.retry(exc=exc, countdown=30)
+        except MaxRetriesExceededError:
+            logger.error("poll_account_dms account_id=%d exhausted all retries — giving up", account_id)
     finally:
         db.close()
 
@@ -285,7 +289,25 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             account_id, conversation_id, message_id,
             self.request.retries, self.max_retries, exc, exc_info=True,
         )
-        self.retry(exc=exc, countdown=60)
+        try:
+            self.retry(exc=exc, countdown=60)
+        except MaxRetriesExceededError:
+            logger.error(
+                "process_message account_id=%d conv=%d msg=%d exhausted retries — marking account error",
+                account_id, conversation_id, message_id,
+            )
+            # Re-open DB session since finally hasn't run yet
+            from database import SessionLocal as _SL
+            from models.account import Account as _Acct, BotStatus as _BS
+            _db = _SL()
+            try:
+                _acct = _db.query(_Acct).filter(_Acct.id == account_id).first()
+                if _acct and _acct.bot_status == _BS.active:
+                    _acct.bot_status = _BS.error
+                    _acct.pause_reason = "worker_max_retries_exceeded"
+                    _db.commit()
+            finally:
+                _db.close()
     finally:
         db.close()
 
