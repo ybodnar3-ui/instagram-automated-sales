@@ -59,7 +59,7 @@ def create_trigger(account_id: int, body: TriggerCreate, db: Session = Depends(g
     trigger = Trigger(
         account_id=account_id,
         keyword=body.keyword.strip(),
-        response_template=body.response_template,
+        response_template=body.response_template.strip(),
         use_ai_followup=body.use_ai_followup,
         is_active=body.is_active,
     )
@@ -90,7 +90,7 @@ def update_trigger(account_id: int, trigger_id: int, body: TriggerUpdate, db: Se
     if body.response_template is not None:
         if not body.response_template.strip():
             raise HTTPException(status_code=422, detail="response_template must not be empty")
-        trigger.response_template = body.response_template
+        trigger.response_template = body.response_template.strip()
     if body.use_ai_followup is not None:
         trigger.use_ai_followup = body.use_ai_followup
     if body.is_active is not None:
