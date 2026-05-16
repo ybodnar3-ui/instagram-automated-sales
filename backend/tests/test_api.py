@@ -87,3 +87,54 @@ def test_get_config_nonexistent_returns_404():
 def test_delete_nonexistent_account_returns_404():
     response = client.delete("/api/accounts/999")
     assert response.status_code == 404
+
+
+# ── Trigger tests ────────────────────────────────────────────────────────────
+
+def _create_account_in_db(db_session):
+    import uuid
+    from models.account import Account, BotStatus
+    from datetime import datetime, timezone
+    acct = Account(
+        username="testuser_" + uuid.uuid4().hex[:12],
+        bot_status=BotStatus.active,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(acct)
+    db_session.commit()
+    db_session.refresh(acct)
+    return acct
+
+
+def test_list_triggers_nonexistent_account_returns_404():
+    response = client.get("/api/triggers/999999")
+    assert response.status_code == 404
+
+
+def test_list_triggers_returns_empty_for_new_account():
+    db = next(override_get_db())
+    acct = _create_account_in_db(db)
+    response = client.get(f"/api/triggers/{acct.id}")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_create_trigger_returns_201():
+    db = next(override_get_db())
+    acct = _create_account_in_db(db)
+    payload = {"keyword": "+", "response_template": "Hi {username}!", "use_ai_followup": False}
+    response = client.post(f"/api/triggers/{acct.id}", json=payload)
+    assert response.status_code == 201
+    data = response.json()
+    assert data["keyword"] == "+"
+    assert data["response_template"] == "Hi {username}!"
+    assert data["is_active"] is True
+
+
+def test_delete_trigger_returns_200():
+    db = next(override_get_db())
+    acct = _create_account_in_db(db)
+    payload = {"keyword": "+", "response_template": "Hi!", "use_ai_followup": False}
+    created = client.post(f"/api/triggers/{acct.id}", json=payload).json()
+    response = client.delete(f"/api/triggers/{acct.id}/{created['id']}")
+    assert response.status_code == 200

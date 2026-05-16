@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from config import setup_logging
 from database import Base, engine, SessionLocal
-from api import accounts, bot, conversations, stats
+from api import accounts, bot, conversations, stats, triggers as triggers_api
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ app.include_router(accounts.router, prefix="/api", tags=["accounts"])
 app.include_router(bot.router, prefix="/api", tags=["bot"])
 app.include_router(conversations.router, prefix="/api", tags=["conversations"])
 app.include_router(stats.router, prefix="/api", tags=["stats"])
+app.include_router(triggers_api.router, prefix="/api", tags=["triggers"])
 
 
 @app.get("/health")
