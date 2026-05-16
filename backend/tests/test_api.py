@@ -138,3 +138,38 @@ def test_delete_trigger_returns_200():
     created = client.post(f"/api/triggers/{acct.id}", json=payload).json()
     response = client.delete(f"/api/triggers/{acct.id}/{created['id']}")
     assert response.status_code == 200
+
+
+# ── Outbound tests ────────────────────────────────────────────────────────────
+
+def test_list_outbound_nonexistent_account_returns_404():
+    response = client.get("/api/outbound/999999")
+    assert response.status_code == 404
+
+
+def test_list_outbound_returns_empty_for_new_account():
+    db = next(override_get_db())
+    acct = _create_account_in_db(db)
+    response = client.get(f"/api/outbound/{acct.id}")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_add_outbound_target_returns_201():
+    db = next(override_get_db())
+    acct = _create_account_in_db(db)
+    payload = {"instagram_username": "target_user", "initial_message": "Hey!"}
+    response = client.post(f"/api/outbound/{acct.id}", json=payload)
+    assert response.status_code == 201
+    data = response.json()
+    assert data["instagram_username"] == "target_user"
+    assert data["status"] == "pending"
+
+
+def test_delete_outbound_target_returns_200():
+    db = next(override_get_db())
+    acct = _create_account_in_db(db)
+    payload = {"instagram_username": "target_user"}
+    created = client.post(f"/api/outbound/{acct.id}", json=payload).json()
+    response = client.delete(f"/api/outbound/{acct.id}/{created['id']}")
+    assert response.status_code == 200
