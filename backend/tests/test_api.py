@@ -59,11 +59,9 @@ def test_get_status_nonexistent_account_returns_404():
     assert response.status_code == 404
 
 
-def test_list_conversations_returns_empty_list():
-    response = client.get("/api/conversations/1")
-    assert response.status_code == 200
-    assert isinstance(response.json(), list)
-    assert response.json() == []
+def test_list_conversations_nonexistent_account_returns_404():
+    response = client.get("/api/conversations/999")
+    assert response.status_code == 404
 
 
 def test_daily_stats_nonexistent_account_returns_404():

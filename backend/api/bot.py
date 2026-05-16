@@ -43,6 +43,11 @@ class ConfigUpdate(BaseModel):
             raise ValueError("delay must be at least 1 second")
         return v
 
+    def model_post_init(self, __context) -> None:
+        if self.min_delay_sec is not None and self.max_delay_sec is not None:
+            if self.min_delay_sec > self.max_delay_sec:
+                raise ValueError("min_delay_sec must not exceed max_delay_sec")
+
 
 @router.post("/bot/{account_id}/pause")
 def pause_bot(account_id: int, db: Session = Depends(get_db)):

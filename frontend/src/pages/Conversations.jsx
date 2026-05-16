@@ -44,11 +44,19 @@ export default function Conversations() {
     }
   }
 
+  const reloadConversations = () => {
+    if (!selectedAccount) return
+    getConversations(selectedAccount, stage === 'all' ? null : stage)
+      .then(({ data }) => setConversations(data))
+      .catch(() => {})
+  }
+
   const handleTakeover = async (threadId) => {
     setActionError(null)
     try {
       await takeoverConversation(threadId)
       await openConversation(threadId)
+      reloadConversations()
     } catch {
       setActionError('Failed to take over conversation.')
     }
@@ -59,6 +67,7 @@ export default function Conversations() {
     try {
       await restoreBot(threadId)
       await openConversation(threadId)
+      reloadConversations()
     } catch {
       setActionError('Failed to restore bot.')
     }

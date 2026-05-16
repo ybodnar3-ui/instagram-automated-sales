@@ -68,6 +68,25 @@ class TestGetHumanDelay:
         long_delays = [get_human_delay(500) for _ in range(50)]
         assert sum(long_delays) / len(long_delays) > sum(short_delays) / len(short_delays)
 
+    def test_uses_config_min_max_delay(self):
+        from services.anti_ban import get_human_delay
+        config = make_config(max_messages=80, warmup=False)
+        config.min_delay_sec = 20.0
+        config.max_delay_sec = 21.0
+        for _ in range(20):
+            delay = get_human_delay(0, config)
+            # base: 20-21, reading: 0, typing: 3-12
+            assert 23.0 <= delay <= 33.0, f"delay {delay} not using config values"
+
+    def test_swaps_min_max_if_misconfigured(self):
+        from services.anti_ban import get_human_delay
+        config = make_config()
+        config.min_delay_sec = 25.0
+        config.max_delay_sec = 8.0  # min > max — should not crash
+        for _ in range(10):
+            delay = get_human_delay(0, config)
+            assert delay >= 0
+
 
 class TestGetTypingDuration:
     def test_typing_duration_within_range(self):

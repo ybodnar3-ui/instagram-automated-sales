@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from database import get_db
+from models.account import Account
 from models.conversation import Conversation, ConvStage
 from models.message import Message
 
@@ -23,6 +24,8 @@ def list_conversations(
             status_code=422,
             detail=f"Invalid stage '{stage}'. Must be one of: {', '.join(sorted(VALID_STAGES))}",
         )
+    if not db.query(Account).filter(Account.id == account_id).first():
+        raise HTTPException(status_code=404, detail="Account not found")
     query = db.query(Conversation).filter(Conversation.account_id == account_id)
     if stage:
         query = query.filter(Conversation.stage == stage)

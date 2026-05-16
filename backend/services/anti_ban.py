@@ -8,6 +8,9 @@ from models.stats import BotConfig
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MIN_DELAY = 8.0
+_DEFAULT_MAX_DELAY = 25.0
+
 
 def get_warmup_limit(account: Account) -> int:
     created = account.created_at
@@ -23,8 +26,13 @@ def get_warmup_limit(account: Account) -> int:
     return 80
 
 
-def get_human_delay(message_length: int) -> float:
-    base_delay = random.uniform(8, 25)
+def get_human_delay(message_length: int, config: Optional[BotConfig] = None) -> float:
+    min_d = config.min_delay_sec if config is not None else _DEFAULT_MIN_DELAY
+    max_d = config.max_delay_sec if config is not None else _DEFAULT_MAX_DELAY
+    # Guard against misconfigured min > max
+    if min_d > max_d:
+        min_d, max_d = max_d, min_d
+    base_delay = random.uniform(min_d, max_d)
     reading_time = message_length * 0.03
     typing_time = random.uniform(3, 12)
     return base_delay + reading_time + typing_time

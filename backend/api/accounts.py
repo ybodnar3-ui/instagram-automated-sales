@@ -42,10 +42,14 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
     try:
         login_and_save(payload.username, payload.password, account, db)
     except Exception as exc:
-        logger.error("account=%s Instagram login failed: %s", username, exc)
+        # Log full detail internally but don't expose exc str (may contain credentials)
+        logger.error("account=%s Instagram login failed: %s", username, exc, exc_info=True)
         db.delete(account)
         db.commit()
-        raise HTTPException(status_code=400, detail=f"Instagram login failed: {exc}")
+        raise HTTPException(
+            status_code=400,
+            detail="Instagram login failed. Check username/password and try again.",
+        )
 
     config = BotConfig(
         account_id=account.id,

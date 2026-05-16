@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone, date
 from celery import Celery
 from celery.exceptions import MaxRetriesExceededError
+from sqlalchemy import update as sa_update
 from config import settings, setup_logging
 
 setup_logging()
@@ -36,6 +37,16 @@ celery_app.conf.update(
 )
 
 
+def _atomic_increment(db, model, filter_col, filter_val, column):
+    """Issue a single SQL UPDATE col = col + 1 to avoid race conditions with concurrent workers."""
+    db.execute(
+        sa_update(model)
+        .where(filter_col == filter_val)
+        .values({column: column + 1})
+    )
+    db.commit()
+
+
 @celery_app.task(name="workers.celery_app.poll_all_accounts", bind=True, max_retries=3)
 def poll_all_accounts(self):
     from database import SessionLocal
@@ -54,7 +65,10 @@ def poll_all_accounts(self):
             poll_account_dms.apply_async(args=[account.id], countdown=jitter)
     except Exception as exc:
         logger.error("poll_all_accounts failed: %s", exc, exc_info=True)
-        self.retry(exc=exc, countdown=30)
+        try:
+            self.retry(exc=exc, countdown=30)
+        except MaxRetriesExceededError:
+            logger.error("poll_all_accounts exhausted all retries — giving up")
     finally:
         db.close()
 
@@ -66,6 +80,21 @@ def _normalize_ts(ts) -> datetime:
     if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
         return ts.replace(tzinfo=timezone.utc)
     return ts
+
+
+def _get_or_create_daily_stats(db, account_id: int):
+    from models.stats import DailyStats
+    today = date.today()
+    stats = db.query(DailyStats).filter(
+        DailyStats.account_id == account_id,
+        DailyStats.date == today,
+    ).first()
+    if not stats:
+        stats = DailyStats(account_id=account_id, date=today)
+        db.add(stats)
+        db.commit()
+        db.refresh(stats)
+    return stats
 
 
 @celery_app.task(name="workers.celery_app.poll_account_dms", bind=True, max_retries=3)
@@ -114,17 +143,9 @@ def poll_account_dms(self, account_id: int):
                     "account=%s new conversation thread=%s user=%s",
                     account.username, thread_id, username,
                 )
-
-                today = date.today()
-                stats = db.query(DailyStats).filter(
-                    DailyStats.account_id == account_id,
-                    DailyStats.date == today,
-                ).first()
-                if not stats:
-                    stats = DailyStats(account_id=account_id, date=today)
-                    db.add(stats)
-                stats.new_conversations += 1
-                db.commit()
+                # Atomic increment to avoid race with concurrent workers
+                _get_or_create_daily_stats(db, account_id)
+                _atomic_increment(db, DailyStats, DailyStats.account_id, account_id, DailyStats.new_conversations)
 
             if not conv.bot_active:
                 continue
@@ -162,6 +183,10 @@ def poll_account_dms(self, account_id: int):
                     "account=%s received message thread=%s msg_id=%d",
                     account.username, thread_id, new_msg.id,
                 )
+
+                # Atomic increment for messages_received
+                _get_or_create_daily_stats(db, account_id)
+                _atomic_increment(db, DailyStats, DailyStats.account_id, account_id, DailyStats.messages_received)
 
                 if can_send_message(account, config, db):
                     process_message.apply_async(args=[account_id, conv.id, new_msg.id])
@@ -216,7 +241,7 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             return
         if config is None:
             logger.error(
-                "account=%d has no BotConfig — cannot process message, pausing account",
+                "account=%d has no BotConfig — cannot process message, marking error",
                 account_id,
             )
             account.bot_status = BotStatus.error
@@ -227,7 +252,8 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             pause_for_daily_limit(account, db)
             return
 
-        delay = get_human_delay(len(incoming.content))
+        # Pass config so min/max_delay_sec from Settings page are respected
+        delay = get_human_delay(len(incoming.content), config)
         logger.debug(
             "account=%s sleeping %.1fs before reply to thread=%s",
             account.username, delay, conv.instagram_thread_id,
@@ -255,21 +281,29 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
                 tokens_used=tokens,
             )
             db.add(out_msg)
-            account.messages_today += 1
             conv.last_message_at = datetime.now(timezone.utc)
             conv.messages_count += 1
-
-            today = date.today()
-            stats = db.query(DailyStats).filter(
-                DailyStats.account_id == account_id,
-                DailyStats.date == today,
-            ).first()
-            if not stats:
-                stats = DailyStats(account_id=account_id, date=today)
-                db.add(stats)
-            stats.messages_sent += 1
-            stats.tokens_used += tokens
             db.commit()
+
+            # Atomic increments — safe under concurrent workers
+            db.execute(
+                sa_update(Account)
+                .where(Account.id == account_id)
+                .values(messages_today=Account.messages_today + 1)
+            )
+            _get_or_create_daily_stats(db, account_id)
+            db.execute(
+                sa_update(DailyStats)
+                .where(DailyStats.account_id == account_id, DailyStats.date == date.today())
+                .values(
+                    messages_sent=DailyStats.messages_sent + 1,
+                    tokens_used=DailyStats.tokens_used + tokens,
+                )
+            )
+            db.commit()
+
+            # Re-read updated messages_today for accurate logging
+            db.refresh(account)
             logger.info(
                 "account=%s replied to thread=%s tokens=%d messages_today=%d",
                 account.username, conv.instagram_thread_id, tokens, account.messages_today,
@@ -296,7 +330,6 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
                 "process_message account_id=%d conv=%d msg=%d exhausted retries — marking account error",
                 account_id, conversation_id, message_id,
             )
-            # Re-open DB session since finally hasn't run yet
             from database import SessionLocal as _SL
             from models.account import Account as _Acct, BotStatus as _BS
             _db = _SL()

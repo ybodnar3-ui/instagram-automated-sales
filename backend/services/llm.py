@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 import anthropic
 from sqlalchemy.orm import Session
 from config import settings
@@ -8,6 +9,17 @@ from models.message import Message, Direction
 from models.stats import BotConfig
 
 logger = logging.getLogger(__name__)
+
+# Module-level singleton — avoids recreating HTTP connection pools on every call
+_client: Optional[anthropic.Anthropic] = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    return _client
+
 
 SYSTEM_PROMPT_TEMPLATE = """\
 Ти — менеджер з продажів компанії {business_name}.
@@ -66,7 +78,7 @@ def generate_response(conversation: Conversation, config: BotConfig, db: Session
     )
 
     try:
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        client = _get_client()
         response = client.messages.create(
             model=config.llm_model,
             max_tokens=500,
