@@ -1,8 +1,12 @@
+import logging
 import random
 import time
 from datetime import datetime, timezone, date
 from celery import Celery
-from config import settings
+from config import settings, setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 celery_app = Celery(
     "igbot",
@@ -43,13 +47,24 @@ def poll_all_accounts(self):
             .filter(Account.bot_status == BotStatus.active, Account.is_active.is_(True))
             .all()
         )
+        logger.debug("poll_all_accounts: scheduling polls for %d active accounts", len(accounts))
         for account in accounts:
             jitter = random.randint(0, 60)
             poll_account_dms.apply_async(args=[account.id], countdown=jitter)
     except Exception as exc:
+        logger.error("poll_all_accounts failed: %s", exc, exc_info=True)
         self.retry(exc=exc, countdown=30)
     finally:
         db.close()
+
+
+def _normalize_ts(ts) -> datetime:
+    """Return a timezone-aware UTC datetime regardless of whether ts is naive or aware."""
+    if ts is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts
 
 
 @celery_app.task(name="workers.celery_app.poll_account_dms", bind=True, max_retries=3)
@@ -65,7 +80,11 @@ def poll_account_dms(self, account_id: int):
     db = SessionLocal()
     try:
         account = db.query(Account).filter(Account.id == account_id).first()
-        if not account or account.bot_status != BotStatus.active:
+        if not account:
+            logger.warning("poll_account_dms: account_id=%d not found", account_id)
+            return
+        if account.bot_status != BotStatus.active:
+            logger.debug("account=%s is %s, skipping poll", account.username, account.bot_status.value)
             return
 
         config = db.query(BotConfig).filter(BotConfig.account_id == account_id).first()
@@ -80,15 +99,20 @@ def poll_account_dms(self, account_id: int):
             ).first()
 
             if not conv:
+                username = thread.users[0].username if thread.users else "unknown"
                 conv = Conversation(
                     account_id=account_id,
                     instagram_thread_id=thread_id,
-                    interlocutor_username=thread.users[0].username if thread.users else "unknown",
+                    interlocutor_username=username,
                     started_at=datetime.now(timezone.utc),
                 )
                 db.add(conv)
                 db.commit()
                 db.refresh(conv)
+                logger.info(
+                    "account=%s new conversation thread=%s user=%s",
+                    account.username, thread_id, username,
+                )
 
                 today = date.today()
                 stats = db.query(DailyStats).filter(
@@ -110,18 +134,16 @@ def poll_account_dms(self, account_id: int):
                 .order_by(Message.sent_at.desc())
                 .first()
             )
+            last_msg_ts = _normalize_ts(last_msg.sent_at if last_msg else None)
 
             viewer_id = thread.viewer_id
             for msg in thread.messages:
                 if msg.user_id == viewer_id:
                     continue
 
-                msg_sent_at = msg.timestamp
-                if hasattr(msg_sent_at, 'tzinfo') and msg_sent_at.tzinfo is None:
-                    from datetime import timezone as tz
-                    msg_sent_at = msg_sent_at.replace(tzinfo=tz.utc)
+                msg_sent_at = _normalize_ts(msg.timestamp)
 
-                if last_msg is not None and msg_sent_at <= last_msg.sent_at:
+                if msg_sent_at <= last_msg_ts:
                     continue
 
                 new_msg = Message(
@@ -135,11 +157,24 @@ def poll_account_dms(self, account_id: int):
                 conv.messages_count += 1
                 db.commit()
                 db.refresh(new_msg)
+                logger.info(
+                    "account=%s received message thread=%s msg_id=%d",
+                    account.username, thread_id, new_msg.id,
+                )
 
                 if can_send_message(account, config, db):
                     process_message.apply_async(args=[account_id, conv.id, new_msg.id])
+                else:
+                    logger.info(
+                        "account=%s daily limit reached, not scheduling reply for thread=%s",
+                        account.username, thread_id,
+                    )
 
     except Exception as exc:
+        logger.error(
+            "poll_account_dms account_id=%d failed (retry %d/%d): %s",
+            account_id, self.request.retries, self.max_retries, exc, exc_info=True,
+        )
         self.retry(exc=exc, countdown=30)
     finally:
         db.close()
@@ -164,18 +199,43 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
         incoming = db.query(Message).filter(Message.id == message_id).first()
 
         if not all([account, conv, incoming]):
+            logger.warning(
+                "process_message: missing records account=%s conv=%s msg=%s — aborting",
+                account_id, conversation_id, message_id,
+            )
             return
         if account.bot_status != BotStatus.active or not conv.bot_active:
+            logger.debug(
+                "account=%s or conv=%d is inactive, skipping message",
+                account_id, conversation_id,
+            )
+            return
+        if config is None:
+            logger.error(
+                "account=%d has no BotConfig — cannot process message, pausing account",
+                account_id,
+            )
+            account.bot_status = BotStatus.error
+            account.pause_reason = "missing_config"
+            db.commit()
             return
         if not can_send_message(account, config, db):
             pause_for_daily_limit(account, db)
             return
 
         delay = get_human_delay(len(incoming.content))
+        logger.debug(
+            "account=%s sleeping %.1fs before reply to thread=%s",
+            account.username, delay, conv.instagram_thread_id,
+        )
         time.sleep(delay)
 
         db.refresh(account)
         if account.bot_status != BotStatus.active:
+            logger.info(
+                "account=%s status changed to %s during delay, aborting reply",
+                account.username, account.bot_status.value,
+            )
             return
 
         response_text, tokens = generate_response(conv, config, db)
@@ -206,11 +266,25 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             stats.messages_sent += 1
             stats.tokens_used += tokens
             db.commit()
+            logger.info(
+                "account=%s replied to thread=%s tokens=%d messages_today=%d",
+                account.username, conv.instagram_thread_id, tokens, account.messages_today,
+            )
 
             if not can_send_message(account, config, db):
                 pause_for_daily_limit(account, db)
+        else:
+            logger.warning(
+                "account=%s send_dm returned False for thread=%s",
+                account.username, conv.instagram_thread_id,
+            )
 
     except Exception as exc:
+        logger.error(
+            "process_message account_id=%d conv=%d msg=%d failed (retry %d/%d): %s",
+            account_id, conversation_id, message_id,
+            self.request.retries, self.max_retries, exc, exc_info=True,
+        )
         self.retry(exc=exc, countdown=60)
     finally:
         db.close()
@@ -225,7 +299,10 @@ def reset_daily_limits():
     db = SessionLocal()
     try:
         accounts = db.query(Account).filter(Account.is_active.is_(True)).all()
+        logger.debug("reset_daily_limits: checking %d accounts", len(accounts))
         for account in accounts:
             check_and_reset_daily_limit(account, db)
+    except Exception as exc:
+        logger.error("reset_daily_limits failed: %s", exc, exc_info=True)
     finally:
         db.close()

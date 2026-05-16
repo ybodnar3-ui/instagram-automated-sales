@@ -1,12 +1,18 @@
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from config import setup_logging
 from database import Base, engine
 from api import accounts, bot, conversations, stats
 
+setup_logging()
+logger = logging.getLogger(__name__)
+
 try:
     Base.metadata.create_all(bind=engine)
-except Exception:
-    pass  # DB not available at import time (e.g., during tests)
+    logger.info("Database tables verified/created")
+except Exception as exc:
+    logger.warning("Could not create tables at startup (expected during tests): %s", exc)
 
 app = FastAPI(title="Instagram AI Sales Bot", version="1.0.0")
 

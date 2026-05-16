@@ -1,9 +1,12 @@
+import logging
 import random
 from datetime import datetime, timezone, date
 from typing import Optional
 from sqlalchemy.orm import Session
 from models.account import Account, BotStatus
 from models.stats import BotConfig
+
+logger = logging.getLogger(__name__)
 
 
 def get_warmup_limit(account: Account) -> int:
@@ -44,7 +47,6 @@ def check_and_reset_daily_limit(account: Account, db: Session) -> None:
     today = date.today()
     last_reset = account.last_reset_date
     if last_reset is None:
-        # Never been reset — treat as already initialized for today (no reset needed)
         return
 
     if hasattr(last_reset, 'date'):
@@ -55,11 +57,16 @@ def check_and_reset_daily_limit(account: Account, db: Session) -> None:
         last_reset_date = None
 
     if last_reset_date is not None and last_reset_date < today:
+        logger.info(
+            "account=%s resetting daily limit (was %d, last_reset=%s)",
+            account.username, account.messages_today, last_reset_date,
+        )
         account.messages_today = 0
         account.last_reset_date = datetime.now(timezone.utc)
         if account.bot_status == BotStatus.paused and account.pause_reason == "daily_limit":
             account.bot_status = BotStatus.active
             account.pause_reason = None
+            logger.info("account=%s auto-resumed after daily limit reset", account.username)
         db.commit()
 
 
@@ -72,12 +79,20 @@ def can_send_message(account: Account, config: Optional[BotConfig], db: Session)
 
 
 def pause_for_daily_limit(account: Account, db: Session) -> None:
+    logger.info(
+        "account=%s reached daily limit (%d messages), pausing until tomorrow",
+        account.username, account.messages_today,
+    )
     account.bot_status = BotStatus.paused
     account.pause_reason = "daily_limit"
     db.commit()
 
 
 def handle_instagram_error(account: Account, db: Session, error_type: str) -> None:
+    logger.error(
+        "account=%s entering error state: %s",
+        account.username, error_type,
+    )
     account.bot_status = BotStatus.error
     account.pause_reason = f"instagram_error:{error_type}"
     db.commit()
