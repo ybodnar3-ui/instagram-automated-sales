@@ -268,6 +268,70 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             )
             return
 
+        # --- Trigger matching ---
+        from models.trigger import Trigger
+        from services.instagram import fetch_user_info
+
+        triggers = db.query(Trigger).filter(
+            Trigger.account_id == account_id,
+            Trigger.is_active.is_(True),
+        ).all()
+
+        matched_trigger = None
+        incoming_lower = incoming.content.lower().strip()
+        for trigger in triggers:
+            if trigger.keyword.lower().strip() in incoming_lower:
+                matched_trigger = trigger
+                break
+
+        if matched_trigger:
+            user_info = fetch_user_info(conv.interlocutor_username or "", account, db)
+            full_name = user_info.get("full_name", conv.interlocutor_username or "")
+            try:
+                trigger_text = matched_trigger.response_template.format(
+                    username=conv.interlocutor_username or "",
+                    full_name=full_name,
+                )
+            except KeyError:
+                trigger_text = matched_trigger.response_template
+
+            trig_success = send_dm(account, conv.instagram_thread_id, trigger_text, db)
+            if trig_success:
+                trig_msg = Message(
+                    conversation_id=conv.id,
+                    direction=Direction.outgoing,
+                    content=trigger_text,
+                    sent_at=datetime.now(timezone.utc),
+                    delay_seconds=delay,
+                    tokens_used=0,
+                )
+                db.add(trig_msg)
+                conv.last_message_at = datetime.now(timezone.utc)
+                conv.messages_count += 1
+                db.commit()
+                db.execute(
+                    sa_update(Account)
+                    .where(Account.id == account_id)
+                    .values(messages_today=Account.messages_today + 1)
+                )
+                _get_or_create_daily_stats(db, account_id)
+                db.execute(
+                    sa_update(DailyStats)
+                    .where(DailyStats.account_id == account_id, DailyStats.date == date.today())
+                    .values(messages_sent=DailyStats.messages_sent + 1)
+                )
+                db.commit()
+                db.refresh(account)
+                logger.info(
+                    "account=%s trigger id=%d fired for thread=%s",
+                    account.username, matched_trigger.id, conv.instagram_thread_id,
+                )
+                if not matched_trigger.use_ai_followup:
+                    return
+                # If use_ai_followup is True, fall through to AI response below
+            else:
+                return  # send failed
+
         response_text, tokens = generate_response(conv, config, db)
         success = send_dm(account, conv.instagram_thread_id, response_text, db)
 
