@@ -21,6 +21,8 @@ class ConfigUpdate(BaseModel):
     max_delay_sec: Optional[float] = None
     llm_model: Optional[str] = None
     warmup_mode: Optional[bool] = None
+    outbound_daily_limit: Optional[int] = None
+    outbound_default_message: Optional[str] = None
 
     @field_validator("llm_model")
     @classmethod
@@ -41,6 +43,13 @@ class ConfigUpdate(BaseModel):
     def validate_delay(cls, v):
         if v is not None and v < 1:
             raise ValueError("delay must be at least 1 second")
+        return v
+
+    @field_validator("outbound_daily_limit")
+    @classmethod
+    def validate_outbound_limit(cls, v):
+        if v is not None and not (0 <= v <= 50):
+            raise ValueError("outbound_daily_limit must be between 0 and 50")
         return v
 
     def model_post_init(self, __context) -> None:
@@ -113,4 +122,6 @@ def get_config(account_id: int, db: Session = Depends(get_db)):
         "max_delay_sec": config.max_delay_sec,
         "llm_model": config.llm_model,
         "warmup_mode": config.warmup_mode,
+        "outbound_daily_limit": config.outbound_daily_limit,
+        "outbound_default_message": config.outbound_default_message,
     }
