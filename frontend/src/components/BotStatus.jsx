@@ -9,6 +9,7 @@ const STATUS_STYLES = {
 
 export default function BotStatus({ accountId, status, pauseReason, onStatusChange }) {
   const [loading, setLoading] = useState(false)
+  const [actionError, setActionError] = useState(null)
 
   const handleToggle = async () => {
     const confirmed = window.confirm(
@@ -16,6 +17,7 @@ export default function BotStatus({ accountId, status, pauseReason, onStatusChan
     )
     if (!confirmed) return
     setLoading(true)
+    setActionError(null)
     try {
       if (status === 'active') {
         await pauseBot(accountId)
@@ -23,6 +25,8 @@ export default function BotStatus({ accountId, status, pauseReason, onStatusChan
         await resumeBot(accountId)
       }
       onStatusChange()
+    } catch (err) {
+      setActionError(err.response?.data?.detail ?? 'Action failed. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -33,9 +37,12 @@ export default function BotStatus({ accountId, status, pauseReason, onStatusChan
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs uppercase font-semibold tracking-widest opacity-70">Bot Status</p>
-          <p className="text-3xl font-bold mt-1">{status?.toUpperCase()}</p>
+          <p className="text-3xl font-bold mt-1">{status?.toUpperCase() ?? '—'}</p>
           {pauseReason && (
             <p className="text-sm mt-1 opacity-70">Reason: {pauseReason}</p>
+          )}
+          {actionError && (
+            <p className="text-sm mt-2 text-red-600 font-medium">{actionError}</p>
           )}
         </div>
         {status !== 'error' && (

@@ -11,35 +11,57 @@ export default function Conversations() {
   const [conversations, setConversations] = useState([])
   const [selected, setSelected] = useState(null)
   const [detail, setDetail] = useState(null)
+  const [listError, setListError] = useState(null)
+  const [detailError, setDetailError] = useState(null)
+  const [actionError, setActionError] = useState(null)
 
   useEffect(() => {
-    getAccounts().then(({ data }) => {
-      setAccounts(data)
-      if (data.length > 0) setSelectedAccount(data[0].id)
-    })
+    getAccounts()
+      .then(({ data }) => {
+        setAccounts(data)
+        if (data.length > 0) setSelectedAccount(data[0].id)
+      })
+      .catch(() => setListError('Failed to load accounts.'))
   }, [])
 
   useEffect(() => {
     if (!selectedAccount) return
-    getConversations(selectedAccount, stage === 'all' ? null : stage).then(({ data }) =>
-      setConversations(data)
-    )
+    setListError(null)
+    getConversations(selectedAccount, stage === 'all' ? null : stage)
+      .then(({ data }) => setConversations(data))
+      .catch(() => setListError('Failed to load conversations.'))
   }, [selectedAccount, stage])
 
   const openConversation = async (threadId) => {
     setSelected(threadId)
-    const { data } = await getConversation(selectedAccount, threadId)
-    setDetail(data)
+    setDetail(null)
+    setDetailError(null)
+    try {
+      const { data } = await getConversation(selectedAccount, threadId)
+      setDetail(data)
+    } catch {
+      setDetailError('Failed to load conversation.')
+    }
   }
 
   const handleTakeover = async (threadId) => {
-    await takeoverConversation(threadId)
-    openConversation(threadId)
+    setActionError(null)
+    try {
+      await takeoverConversation(threadId)
+      await openConversation(threadId)
+    } catch {
+      setActionError('Failed to take over conversation.')
+    }
   }
 
   const handleRestoreBot = async (threadId) => {
-    await restoreBot(threadId)
-    openConversation(threadId)
+    setActionError(null)
+    try {
+      await restoreBot(threadId)
+      await openConversation(threadId)
+    } catch {
+      setActionError('Failed to restore bot.')
+    }
   }
 
   return (
@@ -69,6 +91,11 @@ export default function Conversations() {
             ))}
           </div>
         </div>
+
+        {listError && (
+          <div className="p-3 text-xs text-red-600 bg-red-50">{listError}</div>
+        )}
+
         <div className="overflow-y-auto flex-1">
           {conversations.map((c) => (
             <button
@@ -90,7 +117,13 @@ export default function Conversations() {
           ))}
         </div>
       </div>
+
       <div className="flex-1 flex flex-col">
+        {actionError && (
+          <div className="px-4 py-2 bg-red-50 border-b border-red-200 text-sm text-red-600">
+            {actionError}
+          </div>
+        )}
         {detail ? (
           <>
             <div className="p-3 border-b flex items-center justify-between">
@@ -117,9 +150,13 @@ export default function Conversations() {
               <MessageLog messages={detail.messages} />
             </div>
           </>
+        ) : detailError ? (
+          <div className="flex-1 flex items-center justify-center text-red-500 text-sm">
+            {detailError}
+          </div>
         ) : (
           <div className="flex-1 flex items-center justify-center text-gray-400">
-            Select a conversation
+            {selected ? 'Loading...' : 'Select a conversation'}
           </div>
         )}
       </div>

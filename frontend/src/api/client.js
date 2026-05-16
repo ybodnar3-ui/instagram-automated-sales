@@ -5,6 +5,16 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const status = err.response?.status
+    const detail = err.response?.data?.detail ?? err.message
+    console.error(`[API] ${err.config?.method?.toUpperCase()} ${err.config?.url} → ${status ?? 'network error'}: ${detail}`)
+    return Promise.reject(err)
+  }
+)
+
 export const getAccounts = () => api.get('/accounts')
 export const getBotStatus = (accountId) => api.get(`/bot/${accountId}/status`)
 export const getBotConfig = (accountId) => api.get(`/bot/${accountId}/config`)

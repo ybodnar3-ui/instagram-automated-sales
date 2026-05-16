@@ -11,26 +11,42 @@ export default function Settings() {
   const [selectedAccount, setSelectedAccount] = useState(null)
   const [config, setConfig] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [saveState, setSaveState] = useState(null) // null | 'saved' | 'error'
+  const [saveError, setSaveError] = useState(null)
+  const [loadError, setLoadError] = useState(null)
 
   useEffect(() => {
-    getAccounts().then(({ data }) => {
-      setAccounts(data)
-      if (data.length > 0) setSelectedAccount(data[0].id)
-    })
+    getAccounts()
+      .then(({ data }) => {
+        setAccounts(data)
+        if (data.length > 0) setSelectedAccount(data[0].id)
+      })
+      .catch(() => setLoadError('Failed to load accounts.'))
   }, [])
 
   useEffect(() => {
     if (!selectedAccount) return
-    getBotConfig(selectedAccount).then(({ data }) => setConfig(data))
+    setLoadError(null)
+    setConfig(null)
+    getBotConfig(selectedAccount)
+      .then(({ data }) => setConfig(data))
+      .catch(() => setLoadError('Failed to load bot config.'))
   }, [selectedAccount])
 
   const handleSave = async () => {
     setSaving(true)
-    await updateConfig(selectedAccount, config)
-    setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaveState(null)
+    setSaveError(null)
+    try {
+      await updateConfig(selectedAccount, config)
+      setSaveState('saved')
+      setTimeout(() => setSaveState(null), 2000)
+    } catch (err) {
+      setSaveState('error')
+      setSaveError(err.response?.data?.detail ?? 'Failed to save. Please try again.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const updateField = (key, value) => setConfig(prev => ({ ...prev, [key]: value }))
@@ -49,6 +65,12 @@ export default function Settings() {
           ))}
         </select>
       </div>
+
+      {loadError && (
+        <div className="bg-red-50 border border-red-300 text-red-700 rounded-lg px-4 py-3 text-sm">
+          {loadError}
+        </div>
+      )}
 
       {config && (
         <div className="bg-white rounded-xl border p-5 space-y-4">
@@ -139,12 +161,23 @@ export default function Settings() {
               Enable Warmup Mode (auto-limit by account age)
             </label>
           </div>
+
+          {saveState === 'error' && saveError && (
+            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {saveError}
+            </div>
+          )}
+
           <button
             onClick={handleSave}
             disabled={saving}
-            className="w-full py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 disabled:opacity-50"
+            className={`w-full py-2 rounded-lg font-medium text-white disabled:opacity-50 ${
+              saveState === 'error'
+                ? 'bg-red-500 hover:bg-red-600'
+                : 'bg-purple-600 hover:bg-purple-700'
+            }`}
           >
-            {saving ? 'Saving...' : saved ? 'Saved!' : 'Save Settings'}
+            {saving ? 'Saving...' : saveState === 'saved' ? 'Saved!' : saveState === 'error' ? 'Save Failed' : 'Save Settings'}
           </button>
         </div>
       )}

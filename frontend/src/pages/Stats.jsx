@@ -8,18 +8,29 @@ export default function Stats() {
   const [days, setDays] = useState(7)
   const [chartData, setChartData] = useState([])
   const [summary, setSummary] = useState(null)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
-    getAccounts().then(({ data }) => {
-      setAccounts(data)
-      if (data.length > 0) setSelectedAccount(data[0].id)
-    })
+    getAccounts()
+      .then(({ data }) => {
+        setAccounts(data)
+        if (data.length > 0) setSelectedAccount(data[0].id)
+      })
+      .catch(() => setError('Failed to load accounts.'))
   }, [])
 
   useEffect(() => {
     if (!selectedAccount) return
-    getDailyStats(selectedAccount, days).then(({ data }) => setChartData(data))
-    getSummary(selectedAccount).then(({ data }) => setSummary(data))
+    setError(null)
+    Promise.all([
+      getDailyStats(selectedAccount, days),
+      getSummary(selectedAccount),
+    ])
+      .then(([{ data: chart }, { data: sum }]) => {
+        setChartData(chart)
+        setSummary(sum)
+      })
+      .catch(() => setError('Failed to load stats. Please try again.'))
   }, [selectedAccount, days])
 
   return (
@@ -44,6 +55,12 @@ export default function Stats() {
           <option value={30}>Last 30 days</option>
         </select>
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-300 text-red-700 rounded-lg px-4 py-3 text-sm">
+          {error}
+        </div>
+      )}
 
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
