@@ -161,6 +161,26 @@ export default function Settings() {
               Enable Warmup Mode (auto-limit by account age)
             </label>
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Outbound Daily Limit</label>
+            <input
+              type="number"
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+              value={config.outbound_daily_limit ?? 5}
+              onChange={(e) => updateField('outbound_daily_limit', Number(e.target.value))}
+            />
+            <p className="text-xs text-gray-400 mt-1">Max new DMs the bot sends per day (0 = disabled). Keep ≤ 10.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Outbound Default Message</label>
+            <textarea
+              className="w-full border rounded-lg px-3 py-2 text-sm h-20 resize-none"
+              value={config.outbound_default_message || ''}
+              onChange={(e) => updateField('outbound_default_message', e.target.value)}
+              placeholder="Hey {username}! Saw your profile and wanted to tell you about our service..."
+            />
+            <p className="text-xs text-gray-400 mt-1">Used when an outbound target has no custom message.</p>
+          </div>
 
           {saveState === 'error' && saveError && (
             <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">

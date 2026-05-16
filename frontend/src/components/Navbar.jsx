@@ -3,6 +3,8 @@ import { Link, useLocation } from 'react-router-dom'
 const links = [
   { to: '/', label: 'Dashboard' },
   { to: '/conversations', label: 'Conversations' },
+  { to: '/triggers', label: 'Triggers' },
+  { to: '/outbound', label: 'Outbound' },
   { to: '/stats', label: 'Stats' },
   { to: '/settings', label: 'Settings' },
 ]

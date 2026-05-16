@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Navbar from './components/Navbar'
 import Dashboard from './pages/Dashboard'
 import Conversations from './pages/Conversations'
+import Triggers from './pages/Triggers'
+import Outbound from './pages/Outbound'
 import Stats from './pages/Stats'
 import Settings from './pages/Settings'
 
@@ -22,6 +24,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/conversations" element={<Conversations />} />
+          <Route path="/triggers" element={<Triggers />} />
+          <Route path="/outbound" element={<Outbound />} />
           <Route path="/stats" element={<Stats />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />

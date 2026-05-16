@@ -32,3 +32,14 @@ export const restoreBot = (threadId) =>
 export const getDailyStats = (accountId, days = 7) =>
   api.get(`/stats/${accountId}/daily`, { params: { days } })
 export const getSummary = (accountId) => api.get(`/stats/${accountId}/summary`)
+
+// Triggers
+export const getTriggers = (accountId) => api.get(`/triggers/${accountId}`)
+export const createTrigger = (accountId, data) => api.post(`/triggers/${accountId}`, data)
+export const updateTrigger = (accountId, triggerId, data) => api.put(`/triggers/${accountId}/${triggerId}`, data)
+export const deleteTrigger = (accountId, triggerId) => api.delete(`/triggers/${accountId}/${triggerId}`)
+
+// Outbound
+export const getOutboundTargets = (accountId) => api.get(`/outbound/${accountId}`)
+export const addOutboundTarget = (accountId, data) => api.post(`/outbound/${accountId}`, data)
+export const deleteOutboundTarget = (accountId, targetId) => api.delete(`/outbound/${accountId}/${targetId}`)
