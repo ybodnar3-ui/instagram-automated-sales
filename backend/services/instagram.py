@@ -184,13 +184,14 @@ def login_by_sessionid(session_id: str, account: Account, db: Session, proxy_url
         cl.set_proxy(proxy_url)
     cl.username = account.username
 
-    # Light verification — fetch threads instead of user_info to avoid 467
+    # Best-effort verification — log warning but don't block on failure.
+    # Web-based sessionids may be rejected by the mobile API endpoint; the bot's
+    # first poll will surface any real auth problems via account status.
     try:
         cl.direct_threads(amount=1)
         logger.info("account=%s session verified via direct_threads", account.username)
     except Exception as exc:
-        logger.warning("account=%s session light-check failed: %s", account.username, exc)
-        raise ValueError(f"Session ID is invalid or expired: {exc}")
+        logger.warning("account=%s session light-check failed (proceeding anyway): %s", account.username, exc)
 
     save_session(cl, account, db)
     logger.info("account=%s logged in via session ID", account.username)
