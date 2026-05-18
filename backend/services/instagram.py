@@ -1,13 +1,21 @@
 import json
 import logging
 import time
+import uuid as _uuid
 from typing import Optional
+from urllib.parse import unquote
 from cryptography.fernet import InvalidToken
 from instagrapi import Client
 from instagrapi.exceptions import ChallengeRequired, LoginRequired, PleaseWaitFewMinutes
 from sqlalchemy.orm import Session
 from config import cipher
 from models.account import Account, BotStatus
+
+PENDING_CHALLENGES: dict = {}  # token -> stored challenge state
+
+
+class _PauseForCode(Exception):
+    """Raised by our challenge_code_handler to pause the flow after code is dispatched."""
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +30,19 @@ def decrypt_session(encrypted: str) -> dict:
 
 def get_instagram_client(account: Account) -> Client:
     cl = Client()
+    if account.proxy_url:
+        cl.set_proxy(account.proxy_url)
     if account.session_data:
         try:
             session = decrypt_session(account.session_data)
             cl.set_settings(session)
+            if account.proxy_url:
+                cl.set_proxy(account.proxy_url)  # re-apply after set_settings
         except (InvalidToken, json.JSONDecodeError, Exception) as exc:
             logger.error(
                 "account=%s could not decrypt session, will require fresh login: %s",
                 account.username, exc,
             )
-            # Return a clean client; next login attempt will overwrite session
     return cl
 
 
@@ -46,6 +57,143 @@ def login_and_save(username: str, password: str, account: Account, db: Session) 
     cl.login(username, password)
     save_session(cl, account, db)
     logger.info("account=%s login successful, session saved", username)
+    return cl
+
+
+def begin_challenge_login(username: str, password: str, proxy_url: str = None) -> dict:
+    """
+    Attempts login and handles Instagram challenge flows.
+
+    Returns one of:
+      {"type": "success", "cl": <Client>}           — logged in, no challenge
+      {"type": "challenge", "token": str, "hint": str} — code sent, awaiting user input
+    Raises on hard failures (bad credentials, unexpected errors).
+    """
+    cl = Client()
+    if proxy_url:
+        cl.set_proxy(proxy_url)
+    try:
+        cl.login(username, password)
+        logger.info("account=%s direct login success", username)
+        return {"type": "success", "cl": cl}
+    except ChallengeRequired:
+        pass
+
+    last_json = cl.last_json
+    step_name = last_json.get("step_name", "")
+    logger.info("account=%s challenge required, step=%s", username, step_name)
+
+    # Auto-resolvable: "Was this you?" style
+    if step_name in ("delta_login_review", "scraping_warning"):
+        try:
+            cl.challenge_resolve(last_json)
+            logger.info("account=%s auto-resolved challenge step=%s", username, step_name)
+        except Exception as exc:
+            logger.warning("account=%s auto-resolve failed: %s", username, exc)
+        time.sleep(2)
+        cl2 = Client()
+        if proxy_url:
+            cl2.set_proxy(proxy_url)
+        cl2.login(username, password)
+        logger.info("account=%s retry login success after auto-challenge", username)
+        return {"type": "success", "cl": cl2}
+
+    # Code challenge: send code to user then pause
+    step_data = last_json.get("step_data", {})
+    hint = step_data.get("email") or step_data.get("phone_number") or ""
+
+    def _pause(u, c):
+        raise _PauseForCode()
+
+    cl.challenge_code_handler = _pause
+
+    try:
+        cl.challenge_resolve(last_json)
+        # Resolved without needing user code (shouldn't happen here, but handle it)
+        return {"type": "success", "cl": cl}
+    except _PauseForCode:
+        token = str(_uuid.uuid4())
+        PENDING_CHALLENGES[token] = {
+            "settings": cl.get_settings(),
+            "challenge_url": last_json["challenge"]["api_path"],
+            "username": username,
+            "password": password,
+            "hint": hint,
+            "proxy_url": proxy_url,
+        }
+        logger.info("account=%s code dispatched, token=%s hint=%s", username, token, hint)
+        return {"type": "challenge", "token": token, "hint": hint}
+
+
+def complete_challenge_login(token: str, code: str, account: Account, db: Session) -> Client:
+    """Submits the verification code and finishes login. Saves session on success."""
+    stored = PENDING_CHALLENGES.pop(token, None)
+    if not stored:
+        raise ValueError("Challenge expired or not found. Please try connecting again.")
+
+    proxy_url = stored.get("proxy_url")
+    cl = Client()
+    if proxy_url:
+        cl.set_proxy(proxy_url)
+    cl.set_settings(stored["settings"])
+    if proxy_url:
+        cl.set_proxy(proxy_url)  # re-apply: set_settings can overwrite proxy
+
+    challenge_url = stored["challenge_url"]
+    cl._send_private_request(challenge_url, {"security_code": code})
+
+    result = cl.last_json
+    if result.get("action") != "close" or result.get("status") != "ok":
+        raise ValueError("Incorrect or expired code. Please try again.")
+
+    # Device is now approved — retry login to get full auth state
+    time.sleep(1)
+    cl2 = Client()
+    if proxy_url:
+        cl2.set_proxy(proxy_url)
+    cl2.set_settings(cl.get_settings())
+    if proxy_url:
+        cl2.set_proxy(proxy_url)
+    cl2.login(stored["username"], stored["password"])
+    save_session(cl2, account, db)
+    logger.info("account=%s challenge complete, session saved", stored["username"])
+    return cl2
+
+
+def login_by_sessionid(session_id: str, account: Account, db: Session, proxy_url: str = None) -> Client:
+    """Logs in using an existing Instagram session cookie. Saves session on success."""
+    # URL-decode in case the cookie value came URL-encoded from the browser
+    decoded = unquote(session_id.strip())
+
+    # Extract user_id from the session token (format: userid:token:0:hash)
+    user_id_str = decoded.split(":")[0]
+    if not user_id_str.isdigit():
+        raise ValueError(f"Could not extract user_id from session ID: {decoded[:20]}...")
+
+    cl = Client()
+    if proxy_url:
+        cl.set_proxy(proxy_url)
+
+    # Inject session cookie. In instagrapi 2.x, user_id is a read-only property that reads
+    # from cookie_dict["ds_user_id"], so we must set that cookie too.
+    settings = cl.get_settings()
+    settings["cookies"]["sessionid"] = decoded
+    settings["cookies"]["ds_user_id"] = user_id_str
+    cl.set_settings(settings)
+    if proxy_url:
+        cl.set_proxy(proxy_url)
+    cl.username = account.username
+
+    # Light verification — fetch threads instead of user_info to avoid 467
+    try:
+        cl.direct_threads(amount=1)
+        logger.info("account=%s session verified via direct_threads", account.username)
+    except Exception as exc:
+        logger.warning("account=%s session light-check failed: %s", account.username, exc)
+        raise ValueError(f"Session ID is invalid or expired: {exc}")
+
+    save_session(cl, account, db)
+    logger.info("account=%s logged in via session ID", account.username)
     return cl
 
 
