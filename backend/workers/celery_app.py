@@ -173,6 +173,13 @@ def poll_account_dms(self, account_id: int):
             last_msg_ts = _normalize_ts(last_msg.sent_at if last_msg else None)
 
             viewer_id = thread.viewer_id
+            if viewer_id is None:
+                logger.warning(
+                    "account=%s thread=%s has no viewer_id — session may be invalid, skipping",
+                    account.username, thread_id,
+                )
+                continue
+
             for msg in thread.messages:
                 if msg.user_id == viewer_id:
                     continue
@@ -182,10 +189,20 @@ def poll_account_dms(self, account_id: int):
                 if msg_sent_at <= last_msg_ts:
                     continue
 
+                text = msg.text or ""
+                if not text.strip():
+                    # Media messages (photos, videos, reactions) have no text —
+                    # skip to avoid calling the LLM with an empty message.
+                    logger.debug(
+                        "account=%s thread=%s skipping media/empty message from user_id=%s",
+                        account.username, thread_id, msg.user_id,
+                    )
+                    continue
+
                 new_msg = Message(
                     conversation_id=conv.id,
                     direction=Direction.incoming,
-                    content=msg.text or "",
+                    content=text,
                     sent_at=msg_sent_at,
                 )
                 db.add(new_msg)
@@ -443,13 +460,15 @@ def reset_daily_limits():
 
 @celery_app.task(name="workers.celery_app.send_outbound_messages")
 def send_outbound_messages():
+    """
+    Scheduler: picks pending outbound targets and dispatches each as an
+    individual send_single_outbound task with a random countdown jitter.
+    Does NOT block — no time.sleep() here.
+    """
     from database import SessionLocal
     from models.account import Account, BotStatus
-    from models.conversation import Conversation, ConvStage
     from models.outbound import OutboundTarget, OutboundStatus
-    from models.stats import BotConfig, DailyStats
-    from services.instagram import send_outbound_dm
-    from services.anti_ban import can_send_message
+    from models.stats import BotConfig
 
     db = SessionLocal()
     try:
@@ -473,10 +492,7 @@ def send_outbound_messages():
 
             remaining = config.outbound_daily_limit - sent_today
             if remaining <= 0:
-                logger.debug(
-                    "account=%s reached outbound daily limit %d",
-                    account.username, config.outbound_daily_limit,
-                )
+                logger.debug("account=%s outbound daily limit reached (%d)", account.username, config.outbound_daily_limit)
                 continue
 
             targets = db.query(OutboundTarget).filter(
@@ -484,73 +500,115 @@ def send_outbound_messages():
                 OutboundTarget.status == OutboundStatus.pending,
             ).limit(remaining).all()
 
-            for target in targets:
-                if not can_send_message(account, config, db):
-                    logger.info("account=%s cannot send (limit or paused), stopping outbound", account.username)
-                    break
-
-                message = target.initial_message or config.outbound_default_message
-                if not message or not message.strip():
-                    target.status = OutboundStatus.skipped
-                    target.error_message = "No message configured"
-                    db.commit()
-                    logger.warning(
-                        "account=%s skipping outbound target @%s — no message",
-                        account.username, target.instagram_username,
-                    )
-                    continue
-
-                jitter = random.uniform(60, 300)
-                logger.debug(
-                    "account=%s sleeping %.0fs before outbound DM to @%s",
-                    account.username, jitter, target.instagram_username,
+            for i, target in enumerate(targets):
+                # Stagger sends: each target gets an independent jitter so they
+                # don't all fire at once and don't block the scheduler worker.
+                countdown = random.randint(60, 300) + i * 60
+                send_single_outbound.apply_async(args=[account.id, target.id], countdown=countdown)
+                logger.info(
+                    "account=%s scheduled outbound target_id=%d @%s in %ds",
+                    account.username, target.id, target.instagram_username, countdown,
                 )
-                time.sleep(jitter)
-
-                thread_id = send_outbound_dm(account, target.instagram_username, message, db)
-                if thread_id:
-                    target.status = OutboundStatus.sent
-                    target.sent_at = datetime.now(timezone.utc)
-                    db.commit()
-
-                    existing_conv = db.query(Conversation).filter(
-                        Conversation.account_id == account.id,
-                        Conversation.instagram_thread_id == thread_id,
-                    ).first()
-                    if not existing_conv:
-                        conv = Conversation(
-                            account_id=account.id,
-                            instagram_thread_id=thread_id,
-                            interlocutor_username=target.instagram_username,
-                            stage=ConvStage.new,
-                            last_message_at=datetime.now(timezone.utc),
-                            messages_count=1,
-                        )
-                        db.add(conv)
-                        db.commit()
-
-                    db.execute(
-                        sa_update(Account)
-                        .where(Account.id == account.id)
-                        .values(messages_today=Account.messages_today + 1)
-                    )
-                    _get_or_create_daily_stats(db, account.id)
-                    db.execute(
-                        sa_update(DailyStats)
-                        .where(DailyStats.account_id == account.id, DailyStats.date == today)
-                        .values(messages_sent=DailyStats.messages_sent + 1)
-                    )
-                    db.commit()
-                    db.refresh(account)
-                    logger.info(
-                        "account=%s outbound DM sent to @%s thread=%s",
-                        account.username, target.instagram_username, thread_id,
-                    )
-                else:
-                    target.status = OutboundStatus.failed
-                    target.error_message = "send_outbound_dm returned None"
-                    db.commit()
     except Exception as exc:
         logger.error("send_outbound_messages failed: %s", exc, exc_info=True)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="workers.celery_app.send_single_outbound", bind=True, max_retries=2)
+def send_single_outbound(self, account_id: int, target_id: int):
+    from database import SessionLocal
+    from models.account import Account, BotStatus
+    from models.conversation import Conversation, ConvStage
+    from models.outbound import OutboundTarget, OutboundStatus
+    from models.stats import BotConfig, DailyStats
+    from services.instagram import send_outbound_dm
+    from services.anti_ban import can_send_message
+
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.id == account_id).first()
+        target = db.query(OutboundTarget).filter(OutboundTarget.id == target_id).first()
+        config = db.query(BotConfig).filter(BotConfig.account_id == account_id).first()
+
+        if not account or not target or not config:
+            logger.warning("send_single_outbound: missing records account=%s target=%s", account_id, target_id)
+            return
+
+        if target.status != OutboundStatus.pending:
+            logger.debug("send_single_outbound: target_id=%d already %s, skipping", target_id, target.status.value)
+            return
+
+        if account.bot_status != BotStatus.active or not can_send_message(account, config, db):
+            logger.info("account=%s cannot send outbound (limit or paused), skipping target_id=%d", account.username, target_id)
+            return
+
+        message = target.initial_message or config.outbound_default_message
+        if not message or not message.strip():
+            target.status = OutboundStatus.skipped
+            target.error_message = "No message configured"
+            db.commit()
+            logger.warning("account=%s target_id=%d skipped — no message", account.username, target_id)
+            return
+
+        today = date.today()
+        thread_id = send_outbound_dm(account, target.instagram_username, message, db)
+        if thread_id:
+            target.status = OutboundStatus.sent
+            target.sent_at = datetime.now(timezone.utc)
+            db.commit()
+
+            existing_conv = db.query(Conversation).filter(
+                Conversation.account_id == account_id,
+                Conversation.instagram_thread_id == thread_id,
+            ).first()
+            if not existing_conv:
+                conv = Conversation(
+                    account_id=account_id,
+                    instagram_thread_id=thread_id,
+                    interlocutor_username=target.instagram_username,
+                    stage=ConvStage.new,
+                    last_message_at=datetime.now(timezone.utc),
+                    messages_count=1,
+                )
+                db.add(conv)
+                db.commit()
+
+            db.execute(
+                sa_update(Account)
+                .where(Account.id == account_id)
+                .values(messages_today=Account.messages_today + 1)
+            )
+            _get_or_create_daily_stats(db, account_id)
+            db.execute(
+                sa_update(DailyStats)
+                .where(DailyStats.account_id == account_id, DailyStats.date == today)
+                .values(messages_sent=DailyStats.messages_sent + 1)
+            )
+            db.commit()
+            logger.info("account=%s outbound DM sent to @%s thread=%s", account.username, target.instagram_username, thread_id)
+        else:
+            target.status = OutboundStatus.failed
+            target.error_message = "send_outbound_dm returned None"
+            db.commit()
+            logger.warning("account=%s outbound DM failed for @%s target_id=%d", account.username, target.instagram_username, target_id)
+
+    except Exception as exc:
+        logger.error("send_single_outbound account=%s target=%s failed: %s", account_id, target_id, exc, exc_info=True)
+        try:
+            self.retry(exc=exc, countdown=120)
+        except Exception:
+            db2 = None
+            try:
+                from database import SessionLocal as _SL
+                db2 = _SL()
+                t = db2.query(OutboundTarget).filter(OutboundTarget.id == target_id).first()
+                if t and t.status == OutboundStatus.pending:
+                    t.status = OutboundStatus.failed
+                    t.error_message = f"Worker error: {type(exc).__name__}"
+                    db2.commit()
+            finally:
+                if db2:
+                    db2.close()
     finally:
         db.close()

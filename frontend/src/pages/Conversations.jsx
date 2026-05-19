@@ -54,7 +54,7 @@ export default function Conversations() {
   const handleTakeover = async (threadId) => {
     setActionError(null)
     try {
-      await takeoverConversation(threadId)
+      await takeoverConversation(selectedAccount, threadId)
       await openConversation(threadId)
       reloadConversations()
     } catch {
@@ -65,7 +65,7 @@ export default function Conversations() {
   const handleRestoreBot = async (threadId) => {
     setActionError(null)
     try {
-      await restoreBot(threadId)
+      await restoreBot(selectedAccount, threadId)
       await openConversation(threadId)
       reloadConversations()
     } catch {

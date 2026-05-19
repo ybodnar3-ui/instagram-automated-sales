@@ -105,7 +105,13 @@ def begin_challenge_login(username: str, password: str, proxy_url: str = None) -
         cl2 = Client()
         if proxy_url:
             cl2.set_proxy(proxy_url)
-        cl2.login(username, password)
+        try:
+            cl2.login(username, password)
+        except Exception as exc:
+            logger.error("account=%s retry login after auto-challenge failed: %s", username, exc)
+            raise RuntimeError(
+                f"Instagram challenge was resolved but re-login failed: {exc}"
+            ) from exc
         logger.info("account=%s retry login success after auto-challenge", username)
         return {"type": "success", "cl": cl2}
 

@@ -81,27 +81,33 @@ def get_conversation(account_id: int, thread_id: str, db: Session = Depends(get_
     }
 
 
-@router.post("/conversations/{thread_id}/takeover")
-def takeover_conversation(thread_id: str, db: Session = Depends(get_db)):
+@router.post("/conversations/{account_id}/{thread_id}/takeover")
+def takeover_conversation(account_id: int, thread_id: str, db: Session = Depends(get_db)):
+    if not db.query(Account).filter(Account.id == account_id).first():
+        raise HTTPException(status_code=404, detail="Account not found")
     conv = db.query(Conversation).filter(
-        Conversation.instagram_thread_id == thread_id
+        Conversation.account_id == account_id,
+        Conversation.instagram_thread_id == thread_id,
     ).first()
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.bot_active = False
     db.commit()
-    logger.info("thread=%s taken over by human", thread_id)
+    logger.info("account_id=%d thread=%s taken over by human", account_id, thread_id)
     return {"status": "taken_over", "thread_id": thread_id}
 
 
-@router.post("/conversations/{thread_id}/restore")
-def restore_bot(thread_id: str, db: Session = Depends(get_db)):
+@router.post("/conversations/{account_id}/{thread_id}/restore")
+def restore_bot(account_id: int, thread_id: str, db: Session = Depends(get_db)):
+    if not db.query(Account).filter(Account.id == account_id).first():
+        raise HTTPException(status_code=404, detail="Account not found")
     conv = db.query(Conversation).filter(
-        Conversation.instagram_thread_id == thread_id
+        Conversation.account_id == account_id,
+        Conversation.instagram_thread_id == thread_id,
     ).first()
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.bot_active = True
     db.commit()
-    logger.info("thread=%s bot restored", thread_id)
+    logger.info("account_id=%d thread=%s bot restored", account_id, thread_id)
     return {"status": "restored", "thread_id": thread_id}

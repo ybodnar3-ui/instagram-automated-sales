@@ -37,10 +37,10 @@ export const getConversations = (accountId, stage) =>
   api.get(`/conversations/${accountId}`, { params: stage ? { stage } : {} })
 export const getConversation = (accountId, threadId) =>
   api.get(`/conversations/${accountId}/${threadId}`)
-export const takeoverConversation = (threadId) =>
-  api.post(`/conversations/${threadId}/takeover`)
-export const restoreBot = (threadId) =>
-  api.post(`/conversations/${threadId}/restore`)
+export const takeoverConversation = (accountId, threadId) =>
+  api.post(`/conversations/${accountId}/${threadId}/takeover`)
+export const restoreBot = (accountId, threadId) =>
+  api.post(`/conversations/${accountId}/${threadId}/restore`)
 export const getDailyStats = (accountId, days = 7) =>
   api.get(`/stats/${accountId}/daily`, { params: { days } })
 export const getSummary = (accountId) => api.get(`/stats/${accountId}/summary`)
