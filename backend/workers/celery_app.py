@@ -88,16 +88,26 @@ def _normalize_ts(ts) -> datetime:
 
 def _get_or_create_daily_stats(db, account_id: int):
     from models.stats import DailyStats
+    from sqlalchemy.exc import IntegrityError
     today = date.today()
     stats = db.query(DailyStats).filter(
         DailyStats.account_id == account_id,
         DailyStats.date == today,
     ).first()
     if not stats:
-        stats = DailyStats(account_id=account_id, date=today)
-        db.add(stats)
-        db.commit()
-        db.refresh(stats)
+        try:
+            stats = DailyStats(account_id=account_id, date=today)
+            db.add(stats)
+            db.commit()
+            db.refresh(stats)
+        except IntegrityError:
+            # Another worker beat us — roll back and fetch the existing row
+            db.rollback()
+            stats = db.query(DailyStats).filter(
+                DailyStats.account_id == account_id,
+                DailyStats.date == today,
+            ).first()
+            logger.debug("_get_or_create_daily_stats: concurrent insert resolved for account_id=%d", account_id)
     return stats
 
 

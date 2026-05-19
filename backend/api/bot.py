@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -6,6 +7,7 @@ from database import get_db
 from models.account import Account, BotStatus
 from models.stats import BotConfig
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ALLOWED_MODELS = {"claude-haiku-3-5-20251001", "claude-sonnet-4-6"}
@@ -63,9 +65,16 @@ def pause_bot(account_id: int, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    prev_status = account.bot_status.value
     account.bot_status = BotStatus.paused
     account.pause_reason = "manual"
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%s failed to pause bot", account.username, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to pause bot")
+    logger.info("account=%s paused (was: %s)", account.username, prev_status)
     return {"status": "paused"}
 
 
@@ -74,9 +83,16 @@ def resume_bot(account_id: int, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    prev_status = account.bot_status.value
     account.bot_status = BotStatus.active
     account.pause_reason = None
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%s failed to resume bot", account.username, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to resume bot")
+    logger.info("account=%s resumed (was: %s)", account.username, prev_status)
     return {"status": "active"}
 
 
@@ -101,9 +117,16 @@ def update_config(account_id: int, payload: ConfigUpdate, db: Session = Depends(
     config = db.query(BotConfig).filter(BotConfig.account_id == account_id).first()
     if not config:
         raise HTTPException(status_code=404, detail="Config not found")
-    for field, value in payload.model_dump(exclude_none=True).items():
+    updates = payload.model_dump(exclude_none=True)
+    for field, value in updates.items():
         setattr(config, field, value)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account_id=%d failed to update config fields=%s", account_id, list(updates.keys()), exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save config")
+    logger.info("account_id=%d config updated fields=%s", account_id, list(updates.keys()))
     return {"status": "updated"}
 
 

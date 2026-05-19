@@ -37,12 +37,28 @@ SYSTEM_PROMPT_TEMPLATE = """\
 
 
 def build_system_prompt(config: BotConfig) -> str:
-    return SYSTEM_PROMPT_TEMPLATE.format(
-        business_name=config.business_name,
-        service_description=config.service_description,
-        price_info=config.price_info,
-        objections_script=config.objections_script,
-    )
+    # Use % substitution on the template, then do a safe dict-based format only on the
+    # known placeholders — prevents KeyError if a user writes {something} in their script.
+    try:
+        return SYSTEM_PROMPT_TEMPLATE.format(
+            business_name=config.business_name or "",
+            service_description=config.service_description or "",
+            price_info=config.price_info or "",
+            objections_script=config.objections_script or "",
+        )
+    except KeyError as exc:
+        logger.warning(
+            "build_system_prompt: objections_script contains unescaped placeholder %s — using escaped fallback",
+            exc,
+        )
+        # Escape any braces in user-supplied fields before formatting
+        safe_script = (config.objections_script or "").replace("{", "{{").replace("}", "}}")
+        return SYSTEM_PROMPT_TEMPLATE.format(
+            business_name=(config.business_name or "").replace("{", "{{").replace("}", "}}"),
+            service_description=(config.service_description or "").replace("{", "{{").replace("}", "}}"),
+            price_info=(config.price_info or "").replace("{", "{{").replace("}", "}}"),
+            objections_script=safe_script,
+        )
 
 
 def build_messages(conversation: Conversation, db: Session) -> list[dict]:
