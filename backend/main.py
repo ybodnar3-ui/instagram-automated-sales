@@ -9,6 +9,12 @@ from api import accounts, bot, conversations, stats, triggers as triggers_api, o
 setup_logging()
 logger = logging.getLogger(__name__)
 
+if not settings.DASHBOARD_API_KEY:
+    logger.warning(
+        "DASHBOARD_API_KEY is not set — all /api/* endpoints are publicly accessible. "
+        "Set this variable in .env to enable API authentication."
+    )
+
 try:
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables verified/created")
@@ -16,14 +22,6 @@ except Exception as exc:
     logger.warning("Could not create tables at startup (expected during tests): %s", exc)
 
 app = FastAPI(title="Instagram AI Sales Bot", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.middleware("http")
@@ -41,6 +39,16 @@ async def api_key_auth(request: Request, call_next):
         logger.warning("api_key_auth: rejected %s %s from %s", request.method, request.url.path, request.client.host if request.client else "unknown")
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
+
+# CORSMiddleware must be added AFTER api_key_auth so it is outermost and handles
+# OPTIONS preflight before auth middleware can reject it with 401.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(accounts.router, prefix="/api", tags=["accounts"])
 app.include_router(bot.router, prefix="/api", tags=["bot"])
