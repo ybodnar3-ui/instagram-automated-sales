@@ -1,8 +1,16 @@
 import axios from 'axios'
 
+const STORAGE_KEY = 'dashboard_api_key'
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   headers: { 'Content-Type': 'application/json' },
+})
+
+api.interceptors.request.use((config) => {
+  const key = localStorage.getItem(STORAGE_KEY) || import.meta.env.VITE_API_KEY || ''
+  if (key) config.headers['X-API-Key'] = key
+  return config
 })
 
 api.interceptors.response.use(
@@ -16,6 +24,10 @@ api.interceptors.response.use(
 )
 
 export const getAccounts = () => api.get('/accounts')
+export const addAccount = (data) => api.post('/accounts', data)
+export const addAccountBySession = (data) => api.post('/accounts/session-login', data)
+export const verifyChallenge = (token, code) => api.post('/accounts/challenge/verify', { token, code })
+export const deleteAccount = (accountId) => api.delete(`/accounts/${accountId}`)
 export const getBotStatus = (accountId) => api.get(`/bot/${accountId}/status`)
 export const getBotConfig = (accountId) => api.get(`/bot/${accountId}/config`)
 export const pauseBot = (accountId) => api.post(`/bot/${accountId}/pause`)

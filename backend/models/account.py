@@ -22,4 +22,5 @@ class Account(Base):
     last_reset_date = Column(DateTime(timezone=True), nullable=True)
     bot_status = Column(SAEnum(BotStatus), default=BotStatus.active, nullable=False, index=True)
     pause_reason = Column(String(200), nullable=True)
+    proxy_url = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

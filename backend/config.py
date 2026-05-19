@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str
     SECRET_KEY: str
     ENCRYPTION_KEY: str
+    DASHBOARD_API_KEY: str = ""
     ENVIRONMENT: str = "production"
     LOG_LEVEL: str = "INFO"
 

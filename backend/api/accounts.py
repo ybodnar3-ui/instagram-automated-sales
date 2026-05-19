@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -19,13 +20,104 @@ class AccountCreate(BaseModel):
     service_description: str
     price_info: str
     objections_script: str
+    proxy_url: str = ""
 
 
-@router.post("/accounts", status_code=201)
+class ChallengeVerifyPayload(BaseModel):
+    token: str
+    code: str
+
+
+class SessionLoginPayload(BaseModel):
+    username: str
+    session_id: str
+    business_name: str = ""
+    service_description: str = ""
+    price_info: str = ""
+    objections_script: str = ""
+    proxy_url: str = ""
+
+
+def _create_config(account_id: int, payload_dict: dict, db: Session) -> None:
+    config = BotConfig(
+        account_id=account_id,
+        business_name=payload_dict.get("business_name", ""),
+        service_description=payload_dict.get("service_description", ""),
+        price_info=payload_dict.get("price_info", ""),
+        objections_script=payload_dict.get("objections_script", ""),
+    )
+    db.add(config)
+    db.commit()
+
+
+@router.post("/accounts")
 def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
-    from services.instagram import login_and_save
+    from services.instagram import begin_challenge_login, PENDING_CHALLENGES
 
     username = payload.username.lower().strip()
+
+    if db.query(Account).filter(Account.username == username).first():
+        raise HTTPException(status_code=400, detail="Account already exists")
+
+    proxy_url = payload.proxy_url.strip() or None
+    account = Account(username=username, created_at=datetime.now(timezone.utc), proxy_url=proxy_url)
+    db.add(account)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Account already exists (concurrent request)")
+    db.refresh(account)
+
+    try:
+        result = begin_challenge_login(payload.username, payload.password, proxy_url=proxy_url)
+    except Exception as exc:
+        logger.error("account=%s Instagram login failed: %s", username, exc, exc_info=True)
+        db.delete(account)
+        db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail="Instagram login failed. Check username/password and try again.",
+        )
+
+    if result["type"] == "challenge":
+        # Store the full payload so we can create the account after code verification
+        token = result["token"]
+        PENDING_CHALLENGES[token]["account_id_temp"] = account.id
+        PENDING_CHALLENGES[token]["payload"] = payload.model_dump()
+        # Remove the incomplete account — it gets re-created in /challenge/verify
+        db.delete(account)
+        db.commit()
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "challenge_required",
+                "token": token,
+                "hint": result["hint"],
+            },
+        )
+
+    # Direct success
+    from services.instagram import save_session
+    save_session(result["cl"], account, db)
+    _create_config(account.id, payload.model_dump(), db)
+    logger.info("account=%s created and bot configured", username)
+    return JSONResponse(
+        status_code=201,
+        content={"id": account.id, "username": account.username, "status": account.bot_status.value},
+    )
+
+
+@router.post("/accounts/challenge/verify", status_code=201)
+def verify_challenge(payload: ChallengeVerifyPayload, db: Session = Depends(get_db)):
+    from services.instagram import PENDING_CHALLENGES, complete_challenge_login
+
+    stored = PENDING_CHALLENGES.get(payload.token)
+    if not stored:
+        raise HTTPException(status_code=400, detail="Challenge expired. Please start over.")
+
+    orig_payload = stored.get("payload", {})
+    username = orig_payload.get("username", "").lower().strip()
 
     if db.query(Account).filter(Account.username == username).first():
         raise HTTPException(status_code=400, detail="Account already exists")
@@ -36,32 +128,58 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Account already exists (concurrent request)")
+        raise HTTPException(status_code=409, detail="Account already exists")
     db.refresh(account)
 
     try:
-        login_and_save(payload.username, payload.password, account, db)
+        complete_challenge_login(payload.token, payload.code, account, db)
+    except ValueError as exc:
+        db.delete(account)
+        db.commit()
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        # Log full detail internally but don't expose exc str (may contain credentials)
-        logger.error("account=%s Instagram login failed: %s", username, exc, exc_info=True)
+        logger.error("challenge verify failed: %s", exc, exc_info=True)
+        db.delete(account)
+        db.commit()
+        raise HTTPException(status_code=400, detail="Verification failed. Please try again.")
+
+    _create_config(account.id, orig_payload, db)
+    logger.info("account=%s created via challenge flow", username)
+    return {"id": account.id, "username": account.username, "status": account.bot_status.value}
+
+
+@router.post("/accounts/session-login", status_code=201)
+def session_login(payload: SessionLoginPayload, db: Session = Depends(get_db)):
+    from services.instagram import login_by_sessionid
+
+    username = payload.username.lower().strip()
+
+    if db.query(Account).filter(Account.username == username).first():
+        raise HTTPException(status_code=400, detail="Account already exists")
+
+    proxy_url = payload.proxy_url.strip() or None
+    account = Account(username=username, created_at=datetime.now(timezone.utc), proxy_url=proxy_url)
+    db.add(account)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Account already exists")
+    db.refresh(account)
+
+    try:
+        login_by_sessionid(payload.session_id.strip(), account, db, proxy_url=proxy_url)
+    except Exception as exc:
+        logger.error("account=%s session login failed: %s", username, exc, exc_info=True)
         db.delete(account)
         db.commit()
         raise HTTPException(
             status_code=400,
-            detail="Instagram login failed. Check username/password and try again.",
+            detail="Session ID login failed. Make sure the session ID is correct and not expired.",
         )
 
-    config = BotConfig(
-        account_id=account.id,
-        business_name=payload.business_name,
-        service_description=payload.service_description,
-        price_info=payload.price_info,
-        objections_script=payload.objections_script,
-    )
-    db.add(config)
-    db.commit()
-    logger.info("account=%s created and bot configured", username)
-
+    _create_config(account.id, payload.model_dump(), db)
+    logger.info("account=%s created via session ID login", username)
     return {"id": account.id, "username": account.username, "status": account.bot_status.value}
 
 

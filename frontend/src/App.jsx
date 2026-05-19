@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import AuthGate from './components/AuthGate'
 import Navbar from './components/Navbar'
 import Dashboard from './pages/Dashboard'
 import Conversations from './pages/Conversations'
@@ -18,6 +19,7 @@ function NotFound() {
 
 export default function App() {
   return (
+    <AuthGate>
     <BrowserRouter>
       <div className="min-h-screen bg-gray-50">
         <Navbar />
@@ -32,5 +34,6 @@ export default function App() {
         </Routes>
       </div>
     </BrowserRouter>
+    </AuthGate>
   )
 }

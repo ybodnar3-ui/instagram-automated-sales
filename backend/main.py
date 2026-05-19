@@ -1,8 +1,8 @@
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from config import setup_logging
+from config import setup_logging, settings
 from database import Base, engine, SessionLocal
 from api import accounts, bot, conversations, stats, triggers as triggers_api, outbound as outbound_api
 
@@ -19,11 +19,23 @@ app = FastAPI(title="Instagram AI Sales Bot", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://frontend"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def api_key_auth(request: Request, call_next):
+    if not settings.DASHBOARD_API_KEY:
+        return await call_next(request)
+    if request.url.path in ("/health", "/") or not request.url.path.startswith("/api"):
+        return await call_next(request)
+    key = request.headers.get("X-API-Key", "")
+    if key != settings.DASHBOARD_API_KEY:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return await call_next(request)
 
 app.include_router(accounts.router, prefix="/api", tags=["accounts"])
 app.include_router(bot.router, prefix="/api", tags=["bot"])
