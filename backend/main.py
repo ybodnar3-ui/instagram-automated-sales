@@ -28,12 +28,17 @@ app.add_middleware(
 
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    if not settings.DASHBOARD_API_KEY:
-        return await call_next(request)
-    if request.url.path in ("/health", "/") or not request.url.path.startswith("/api"):
+    # Pass-through: auth disabled, CORS preflight, non-API paths
+    if (
+        not settings.DASHBOARD_API_KEY
+        or request.method == "OPTIONS"
+        or request.url.path in ("/health", "/")
+        or not request.url.path.startswith("/api")
+    ):
         return await call_next(request)
     key = request.headers.get("X-API-Key", "")
     if key != settings.DASHBOARD_API_KEY:
+        logger.warning("api_key_auth: rejected %s %s from %s", request.method, request.url.path, request.client.host if request.client else "unknown")
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 

@@ -47,7 +47,12 @@ def _create_config(account_id: int, payload_dict: dict, db: Session) -> None:
         objections_script=payload_dict.get("objections_script", ""),
     )
     db.add(config)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account_id=%s failed to create BotConfig, rolling back", account_id, exc_info=True)
+        raise
 
 
 @router.post("/accounts")
@@ -119,10 +124,14 @@ def verify_challenge(payload: ChallengeVerifyPayload, db: Session = Depends(get_
     orig_payload = stored.get("payload", {})
     username = orig_payload.get("username", "").lower().strip()
 
+    if not username:
+        raise HTTPException(status_code=400, detail="Challenge data is corrupt. Please start over.")
+
     if db.query(Account).filter(Account.username == username).first():
         raise HTTPException(status_code=400, detail="Account already exists")
 
-    account = Account(username=username, created_at=datetime.now(timezone.utc))
+    proxy_url = orig_payload.get("proxy_url", "") or None
+    account = Account(username=username, created_at=datetime.now(timezone.utc), proxy_url=proxy_url)
     db.add(account)
     try:
         db.commit()

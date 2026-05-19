@@ -12,6 +12,16 @@ from config import cipher
 from models.account import Account, BotStatus
 
 PENDING_CHALLENGES: dict = {}  # token -> stored challenge state
+_CHALLENGE_TTL_SECONDS = 600  # 10 minutes
+
+
+def _purge_expired_challenges() -> None:
+    now = time.time()
+    expired = [t for t, v in PENDING_CHALLENGES.items() if now - v.get("created_at", now) > _CHALLENGE_TTL_SECONDS]
+    for t in expired:
+        PENDING_CHALLENGES.pop(t, None)
+    if expired:
+        logger.info("purged %d expired challenge token(s)", len(expired))
 
 
 class _PauseForCode(Exception):
@@ -60,7 +70,7 @@ def login_and_save(username: str, password: str, account: Account, db: Session) 
     return cl
 
 
-def begin_challenge_login(username: str, password: str, proxy_url: str = None) -> dict:
+def begin_challenge_login(username: str, password: str, proxy_url: str = None) -> dict:  # noqa: C901
     """
     Attempts login and handles Instagram challenge flows.
 
@@ -69,6 +79,7 @@ def begin_challenge_login(username: str, password: str, proxy_url: str = None) -
       {"type": "challenge", "token": str, "hint": str} — code sent, awaiting user input
     Raises on hard failures (bad credentials, unexpected errors).
     """
+    _purge_expired_challenges()
     cl = Client()
     if proxy_url:
         cl.set_proxy(proxy_url)
@@ -120,6 +131,7 @@ def begin_challenge_login(username: str, password: str, proxy_url: str = None) -
             "password": password,
             "hint": hint,
             "proxy_url": proxy_url,
+            "created_at": time.time(),
         }
         logger.info("account=%s code dispatched, token=%s hint=%s", username, token, hint)
         return {"type": "challenge", "token": token, "hint": hint}
