@@ -207,9 +207,14 @@ def poll_account_dms(self, account_id: int):
                 )
                 db.add(new_msg)
                 conv.last_message_at = msg_sent_at
-                conv.messages_count += 1
                 db.commit()
                 db.refresh(new_msg)
+                # Atomic increment to avoid race between concurrent poll workers
+                db.execute(
+                    sa_update(Conversation)
+                    .where(Conversation.id == conv.id)
+                    .values(messages_count=Conversation.messages_count + 1)
+                )
                 logger.info(
                     "account=%s received message thread=%s msg_id=%d",
                     account.username, thread_id, new_msg.id,
@@ -338,8 +343,12 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
                 )
                 db.add(trig_msg)
                 conv.last_message_at = datetime.now(timezone.utc)
-                conv.messages_count += 1
                 db.commit()
+                db.execute(
+                    sa_update(Conversation)
+                    .where(Conversation.id == conv.id)
+                    .values(messages_count=Conversation.messages_count + 1)
+                )
                 db.execute(
                     sa_update(Account)
                     .where(Account.id == account_id)
@@ -377,10 +386,14 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             )
             db.add(out_msg)
             conv.last_message_at = datetime.now(timezone.utc)
-            conv.messages_count += 1
             db.commit()
 
             # Atomic increments — safe under concurrent workers
+            db.execute(
+                sa_update(Conversation)
+                .where(Conversation.id == conv.id)
+                .values(messages_count=Conversation.messages_count + 1)
+            )
             db.execute(
                 sa_update(Account)
                 .where(Account.id == account_id)
@@ -413,29 +426,47 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             )
 
     except Exception as exc:
-        logger.error(
-            "process_message account_id=%d conv=%d msg=%d failed (retry %d/%d): %s",
-            account_id, conversation_id, message_id,
-            self.request.retries, self.max_retries, exc, exc_info=True,
-        )
-        try:
-            self.retry(exc=exc, countdown=60)
-        except MaxRetriesExceededError:
-            logger.error(
-                "process_message account_id=%d conv=%d msg=%d exhausted retries — marking account error",
-                account_id, conversation_id, message_id,
+        import anthropic as _anthropic
+        is_rate_limit = isinstance(exc, _anthropic.RateLimitError)
+        is_api_err = isinstance(exc, (_anthropic.APIStatusError, _anthropic.APIConnectionError))
+
+        if is_rate_limit:
+            logger.warning(
+                "process_message account_id=%d conv=%d: Anthropic rate limit — will retry",
+                account_id, conversation_id,
             )
-            from database import SessionLocal as _SL
-            from models.account import Account as _Acct, BotStatus as _BS
-            _db = _SL()
-            try:
-                _acct = _db.query(_Acct).filter(_Acct.id == account_id).first()
-                if _acct and _acct.bot_status == _BS.active:
-                    _acct.bot_status = _BS.error
-                    _acct.pause_reason = "worker_max_retries_exceeded"
-                    _db.commit()
-            finally:
-                _db.close()
+        else:
+            logger.error(
+                "process_message account_id=%d conv=%d msg=%d failed (retry %d/%d): %s",
+                account_id, conversation_id, message_id,
+                self.request.retries, self.max_retries, exc, exc_info=True,
+            )
+        try:
+            countdown = 120 if is_rate_limit else 60
+            self.retry(exc=exc, countdown=countdown)
+        except MaxRetriesExceededError:
+            # Don't kill the account for transient LLM errors — only for Instagram errors
+            if is_rate_limit or is_api_err:
+                logger.error(
+                    "process_message account_id=%d conv=%d: LLM error exhausted retries — skipping message (account stays active)",
+                    account_id, conversation_id,
+                )
+            else:
+                logger.error(
+                    "process_message account_id=%d conv=%d msg=%d exhausted retries — marking account error",
+                    account_id, conversation_id, message_id,
+                )
+                from database import SessionLocal as _SL
+                from models.account import Account as _Acct, BotStatus as _BS
+                _db = _SL()
+                try:
+                    _acct = _db.query(_Acct).filter(_Acct.id == account_id).first()
+                    if _acct and _acct.bot_status == _BS.active:
+                        _acct.bot_status = _BS.error
+                        _acct.pause_reason = "worker_max_retries_exceeded"
+                        _db.commit()
+                finally:
+                    _db.close()
     finally:
         db.close()
 

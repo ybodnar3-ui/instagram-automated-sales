@@ -63,7 +63,12 @@ def add_outbound_target(account_id: int, body: OutboundTargetCreate, db: Session
         scheduled_at=datetime.now(timezone.utc),
     )
     db.add(target)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%d failed to add outbound target @%s", account_id, username, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save outbound target")
     db.refresh(target)
     logger.info("account=%d added outbound target @%s id=%d", account_id, username, target.id)
     return _serialize(target)
@@ -79,6 +84,11 @@ def delete_outbound_target(account_id: int, target_id: int, db: Session = Depend
     if not target:
         raise HTTPException(status_code=404, detail="Target not found")
     db.delete(target)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%d failed to delete outbound target id=%d", account_id, target_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete outbound target")
     logger.info("account=%d deleted outbound target id=%d", account_id, target_id)
     return {"status": "deleted", "id": target_id}

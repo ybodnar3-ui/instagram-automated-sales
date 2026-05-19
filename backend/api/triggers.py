@@ -64,7 +64,12 @@ def create_trigger(account_id: int, body: TriggerCreate, db: Session = Depends(g
         is_active=body.is_active,
     )
     db.add(trigger)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%d failed to create trigger keyword=%r", account_id, body.keyword, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save trigger")
     db.refresh(trigger)
     logger.info("account=%d created trigger id=%d keyword=%r", account_id, trigger.id, trigger.keyword)
     return {
@@ -95,7 +100,12 @@ def update_trigger(account_id: int, trigger_id: int, body: TriggerUpdate, db: Se
         trigger.use_ai_followup = body.use_ai_followup
     if body.is_active is not None:
         trigger.is_active = body.is_active
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%d failed to update trigger id=%d", account_id, trigger_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update trigger")
     db.refresh(trigger)
     logger.info("account=%d updated trigger id=%d", account_id, trigger_id)
     return {
@@ -115,6 +125,11 @@ def delete_trigger(account_id: int, trigger_id: int, db: Session = Depends(get_d
     if not trigger:
         raise HTTPException(status_code=404, detail="Trigger not found")
     db.delete(trigger)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%d failed to delete trigger id=%d", account_id, trigger_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete trigger")
     logger.info("account=%d deleted trigger id=%d", account_id, trigger_id)
     return {"status": "deleted", "id": trigger_id}
