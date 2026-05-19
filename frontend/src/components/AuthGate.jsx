@@ -1,28 +1,51 @@
 import { useState, useEffect } from 'react'
+import axios from 'axios'
 
 const STORAGE_KEY = 'dashboard_api_key'
-const REQUIRED_KEY = import.meta.env.VITE_API_KEY || ''
+const BASE_URL = import.meta.env.VITE_API_URL || ''
 
 export function getStoredKey() {
   return localStorage.getItem(STORAGE_KEY) || ''
+}
+
+async function verifyKey(key) {
+  // Verify the key against the backend — avoids baking any secret into the JS bundle.
+  try {
+    await axios.get(`${BASE_URL}/accounts`, {
+      headers: key ? { 'X-API-Key': key } : {},
+    })
+    return true
+  } catch (err) {
+    if (err.response?.status === 401) return false
+    // Network errors or server errors: unlock so the user sees the real error in the dashboard
+    return true
+  }
 }
 
 export default function AuthGate({ children }) {
   const [unlocked, setUnlocked] = useState(false)
   const [input, setInput] = useState('')
   const [error, setError] = useState(false)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
-    if (!REQUIRED_KEY) { setUnlocked(true); return }
-    if (getStoredKey() === REQUIRED_KEY) setUnlocked(true)
+    const stored = getStoredKey()
+    // Auto-unlock with stored key (verified against backend)
+    verifyKey(stored).then((ok) => {
+      if (ok) setUnlocked(true)
+    })
   }, [])
 
-  if (!REQUIRED_KEY || unlocked) return children
+  if (unlocked) return children
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    if (input.trim() === REQUIRED_KEY) {
-      localStorage.setItem(STORAGE_KEY, input.trim())
+    const key = input.trim()
+    setChecking(true)
+    const ok = await verifyKey(key)
+    setChecking(false)
+    if (ok) {
+      localStorage.setItem(STORAGE_KEY, key)
       setUnlocked(true)
     } else {
       setError(true)
@@ -54,9 +77,10 @@ export default function AuthGate({ children }) {
           />
           <button
             type="submit"
-            className="w-full bg-purple-600 text-white py-3 rounded-lg text-sm font-medium hover:bg-purple-700"
+            disabled={checking}
+            className="w-full bg-purple-600 text-white py-3 rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50"
           >
-            Unlock
+            {checking ? 'Checking...' : 'Unlock'}
           </button>
         </form>
       </div>
