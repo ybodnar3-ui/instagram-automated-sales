@@ -1,5 +1,5 @@
 import logging
-from datetime import date, timedelta
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -26,7 +26,7 @@ def get_daily_stats(
     db: Session = Depends(get_db),
 ):
     _get_account_or_404(account_id, db)
-    since = date.today() - timedelta(days=days - 1)
+    since = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
     stats = (
         db.query(DailyStats)
         .filter(DailyStats.account_id == account_id, DailyStats.date >= since)

@@ -103,9 +103,18 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
         )
 
     # Direct success
-    from services.instagram import save_session
-    save_session(result["cl"], account, db)
-    _create_config(account.id, payload.model_dump(), db)
+    try:
+        from services.instagram import save_session
+        save_session(result["cl"], account, db)
+        _create_config(account.id, payload.model_dump(), db)
+    except Exception as exc:
+        logger.error("account=%s failed to initialize after login: %s", username, exc, exc_info=True)
+        try:
+            db.delete(account)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to initialize account. Please try again.")
     logger.info("account=%s created and bot configured", username)
     return JSONResponse(
         status_code=201,
@@ -152,7 +161,16 @@ def verify_challenge(payload: ChallengeVerifyPayload, db: Session = Depends(get_
         db.commit()
         raise HTTPException(status_code=400, detail="Verification failed. Please try again.")
 
-    _create_config(account.id, orig_payload, db)
+    try:
+        _create_config(account.id, orig_payload, db)
+    except Exception as exc:
+        logger.error("account=%s failed to create config after challenge: %s", username, exc, exc_info=True)
+        try:
+            db.delete(account)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to initialize account. Please try again.")
     logger.info("account=%s created via challenge flow", username)
     return {"id": account.id, "username": account.username, "status": account.bot_status.value}
 
@@ -187,7 +205,16 @@ def session_login(payload: SessionLoginPayload, db: Session = Depends(get_db)):
             detail="Session ID login failed. Make sure the session ID is correct and not expired.",
         )
 
-    _create_config(account.id, payload.model_dump(), db)
+    try:
+        _create_config(account.id, payload.model_dump(), db)
+    except Exception as exc:
+        logger.error("account=%s failed to create config after session login: %s", username, exc, exc_info=True)
+        try:
+            db.delete(account)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to initialize account. Please try again.")
     logger.info("account=%s created via session ID login", username)
     return {"id": account.id, "username": account.username, "status": account.bot_status.value}
 
@@ -195,6 +222,7 @@ def session_login(payload: SessionLoginPayload, db: Session = Depends(get_db)):
 @router.get("/accounts")
 def list_accounts(db: Session = Depends(get_db)):
     accounts = db.query(Account).all()
+    logger.debug("list_accounts: returned %d accounts", len(accounts))
     return [
         {
             "id": a.id,
@@ -215,6 +243,11 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Account not found")
     username = account.username
     db.delete(account)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%s failed to delete", username, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete account")
     logger.info("account=%s deleted", username)
     return {"status": "deleted"}

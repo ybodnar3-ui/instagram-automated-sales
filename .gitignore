@@ -15,3 +15,7 @@ node_modules/
 .DS_Store
 *.db
 *.sqlite
+.planning/
+.playwright-mcp/
+docs/
+Untitled

@@ -30,6 +30,7 @@ def list_conversations(
     if stage:
         query = query.filter(Conversation.stage == stage)
     convs = query.order_by(Conversation.last_message_at.desc()).all()
+    logger.debug("account_id=%d list_conversations stage=%s returned %d", account_id, stage, len(convs))
     return [
         {
             "id": c.id,
@@ -92,7 +93,12 @@ def takeover_conversation(account_id: int, thread_id: str, db: Session = Depends
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.bot_active = False
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account_id=%d thread=%s failed to commit takeover", account_id, thread_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to take over conversation")
     logger.info("account_id=%d thread=%s taken over by human", account_id, thread_id)
     return {"status": "taken_over", "thread_id": thread_id}
 
@@ -108,6 +114,11 @@ def restore_bot(account_id: int, thread_id: str, db: Session = Depends(get_db)):
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     conv.bot_active = True
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account_id=%d thread=%s failed to commit bot restore", account_id, thread_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to restore bot")
     logger.info("account_id=%d thread=%s bot restored", account_id, thread_id)
     return {"status": "restored", "thread_id": thread_id}

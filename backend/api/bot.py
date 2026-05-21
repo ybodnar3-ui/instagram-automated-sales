@@ -120,6 +120,12 @@ def update_config(account_id: int, payload: ConfigUpdate, db: Session = Depends(
     updates = payload.model_dump(exclude_none=True)
     for field, value in updates.items():
         setattr(config, field, value)
+    # Cross-field validation after applying all updates (catches single-field updates too)
+    if config.min_delay_sec > config.max_delay_sec:
+        raise HTTPException(
+            status_code=422,
+            detail=f"min_delay_sec ({config.min_delay_sec}) must not exceed max_delay_sec ({config.max_delay_sec})",
+        )
     try:
         db.commit()
     except Exception:

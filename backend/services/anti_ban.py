@@ -1,6 +1,6 @@
 import logging
 import random
-from datetime import datetime, timezone, date
+from datetime import date, datetime, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from models.account import Account, BotStatus
@@ -52,7 +52,7 @@ def get_effective_daily_limit(account: Account, config: Optional[BotConfig]) -> 
 
 
 def check_and_reset_daily_limit(account: Account, db: Session) -> None:
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
     last_reset = account.last_reset_date
     if last_reset is None:
         return
@@ -75,7 +75,11 @@ def check_and_reset_daily_limit(account: Account, db: Session) -> None:
             account.bot_status = BotStatus.active
             account.pause_reason = None
             logger.info("account=%s auto-resumed after daily limit reset", account.username)
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.error("account=%s failed to commit daily limit reset", account.username, exc_info=True)
 
 
 def can_send_message(account: Account, config: Optional[BotConfig], db: Session) -> bool:
@@ -93,7 +97,11 @@ def pause_for_daily_limit(account: Account, db: Session) -> None:
     )
     account.bot_status = BotStatus.paused
     account.pause_reason = "daily_limit"
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%s failed to persist daily_limit pause", account.username, exc_info=True)
 
 
 def handle_instagram_error(account: Account, db: Session, error_type: str) -> None:
@@ -103,4 +111,8 @@ def handle_instagram_error(account: Account, db: Session, error_type: str) -> No
     )
     account.bot_status = BotStatus.error
     account.pause_reason = f"instagram_error:{error_type}"
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("account=%s failed to persist error state", account.username, exc_info=True)

@@ -1,7 +1,7 @@
 import logging
 import random
 import time
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from celery import Celery
 from celery.exceptions import MaxRetriesExceededError
 from sqlalchemy import update as sa_update
@@ -39,16 +39,6 @@ celery_app.conf.update(
         },
     },
 )
-
-
-def _atomic_increment(db, model, filter_col, filter_val, column):
-    """Issue a single SQL UPDATE col = col + 1 to avoid race conditions with concurrent workers."""
-    db.execute(
-        sa_update(model)
-        .where(filter_col == filter_val)
-        .values({column: column + 1})
-    )
-    db.commit()
 
 
 @celery_app.task(name="workers.celery_app.poll_all_accounts", bind=True, max_retries=3)
@@ -89,7 +79,7 @@ def _normalize_ts(ts) -> datetime:
 def _get_or_create_daily_stats(db, account_id: int):
     from models.stats import DailyStats
     from sqlalchemy.exc import IntegrityError
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
     stats = db.query(DailyStats).filter(
         DailyStats.account_id == account_id,
         DailyStats.date == today,
@@ -157,9 +147,14 @@ def poll_account_dms(self, account_id: int):
                     "account=%s new conversation thread=%s user=%s",
                     account.username, thread_id, username,
                 )
-                # Atomic increment to avoid race with concurrent workers
+                # Atomic increment filtered by account_id AND today's date to avoid corrupting historical rows
                 _get_or_create_daily_stats(db, account_id)
-                _atomic_increment(db, DailyStats, DailyStats.account_id, account_id, DailyStats.new_conversations)
+                db.execute(
+                    sa_update(DailyStats)
+                    .where(DailyStats.account_id == account_id, DailyStats.date == datetime.now(timezone.utc).date())
+                    .values(new_conversations=DailyStats.new_conversations + 1)
+                )
+                db.commit()
 
             if not conv.bot_active:
                 continue
@@ -209,20 +204,26 @@ def poll_account_dms(self, account_id: int):
                 conv.last_message_at = msg_sent_at
                 db.commit()
                 db.refresh(new_msg)
-                # Atomic increment to avoid race between concurrent poll workers
-                db.execute(
-                    sa_update(Conversation)
-                    .where(Conversation.id == conv.id)
-                    .values(messages_count=Conversation.messages_count + 1)
-                )
                 logger.info(
                     "account=%s received message thread=%s msg_id=%d",
                     account.username, thread_id, new_msg.id,
                 )
 
-                # Atomic increment for messages_received
+                # Ensure today's stats row exists BEFORE any uncommitted UPDATEs.
+                # _get_or_create may rollback on IntegrityError (concurrent worker) —
+                # calling it here means nothing pending is lost if that happens.
                 _get_or_create_daily_stats(db, account_id)
-                _atomic_increment(db, DailyStats, DailyStats.account_id, account_id, DailyStats.messages_received)
+                db.execute(
+                    sa_update(Conversation)
+                    .where(Conversation.id == conv.id)
+                    .values(messages_count=Conversation.messages_count + 1)
+                )
+                db.execute(
+                    sa_update(DailyStats)
+                    .where(DailyStats.account_id == account_id, DailyStats.date == datetime.now(timezone.utc).date())
+                    .values(messages_received=DailyStats.messages_received + 1)
+                )
+                db.commit()
 
                 if can_send_message(account, config, db):
                     process_message.apply_async(args=[account_id, conv.id, new_msg.id])
@@ -344,6 +345,9 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
                 db.add(trig_msg)
                 conv.last_message_at = datetime.now(timezone.utc)
                 db.commit()
+                # Ensure stats row exists BEFORE uncommitted UPDATEs so a rollback on
+                # IntegrityError (concurrent worker) can't silently drop the counter updates.
+                _get_or_create_daily_stats(db, account_id)
                 db.execute(
                     sa_update(Conversation)
                     .where(Conversation.id == conv.id)
@@ -354,10 +358,9 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
                     .where(Account.id == account_id)
                     .values(messages_today=Account.messages_today + 1)
                 )
-                _get_or_create_daily_stats(db, account_id)
                 db.execute(
                     sa_update(DailyStats)
-                    .where(DailyStats.account_id == account_id, DailyStats.date == date.today())
+                    .where(DailyStats.account_id == account_id, DailyStats.date == datetime.now(timezone.utc).date())
                     .values(messages_sent=DailyStats.messages_sent + 1)
                 )
                 db.commit()
@@ -388,7 +391,8 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
             conv.last_message_at = datetime.now(timezone.utc)
             db.commit()
 
-            # Atomic increments — safe under concurrent workers
+            # Ensure stats row exists BEFORE uncommitted UPDATEs.
+            _get_or_create_daily_stats(db, account_id)
             db.execute(
                 sa_update(Conversation)
                 .where(Conversation.id == conv.id)
@@ -399,10 +403,9 @@ def process_message(self, account_id: int, conversation_id: int, message_id: int
                 .where(Account.id == account_id)
                 .values(messages_today=Account.messages_today + 1)
             )
-            _get_or_create_daily_stats(db, account_id)
             db.execute(
                 sa_update(DailyStats)
-                .where(DailyStats.account_id == account_id, DailyStats.date == date.today())
+                .where(DailyStats.account_id == account_id, DailyStats.date == datetime.now(timezone.utc).date())
                 .values(
                     messages_sent=DailyStats.messages_sent + 1,
                     tokens_used=DailyStats.tokens_used + tokens,
@@ -482,7 +485,10 @@ def reset_daily_limits():
         accounts = db.query(Account).filter(Account.is_active.is_(True)).all()
         logger.debug("reset_daily_limits: checking %d accounts", len(accounts))
         for account in accounts:
-            check_and_reset_daily_limit(account, db)
+            try:
+                check_and_reset_daily_limit(account, db)
+            except Exception as exc:
+                logger.error("reset_daily_limits: account=%s failed: %s", account.username, exc, exc_info=True)
     except Exception as exc:
         logger.error("reset_daily_limits failed: %s", exc, exc_info=True)
     finally:
@@ -509,37 +515,45 @@ def send_outbound_messages():
         ).all()
 
         for account in accounts:
-            config = db.query(BotConfig).filter(BotConfig.account_id == account.id).first()
-            if config is None:
-                continue
+            try:
+                config = db.query(BotConfig).filter(BotConfig.account_id == account.id).first()
+                if config is None:
+                    continue
 
-            today = date.today()
-            today_start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
-            sent_today = db.query(OutboundTarget).filter(
-                OutboundTarget.account_id == account.id,
-                OutboundTarget.status == OutboundStatus.sent,
-                OutboundTarget.sent_at >= today_start,
-            ).count()
+                today = datetime.now(timezone.utc).date()
+                today_start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+                sent_today = db.query(OutboundTarget).filter(
+                    OutboundTarget.account_id == account.id,
+                    OutboundTarget.status == OutboundStatus.sent,
+                    OutboundTarget.sent_at >= today_start,
+                ).count()
 
-            remaining = config.outbound_daily_limit - sent_today
-            if remaining <= 0:
-                logger.debug("account=%s outbound daily limit reached (%d)", account.username, config.outbound_daily_limit)
-                continue
+                remaining = config.outbound_daily_limit - sent_today
+                if remaining <= 0:
+                    logger.debug("account=%s outbound daily limit reached (%d)", account.username, config.outbound_daily_limit)
+                    continue
 
-            targets = db.query(OutboundTarget).filter(
-                OutboundTarget.account_id == account.id,
-                OutboundTarget.status == OutboundStatus.pending,
-            ).limit(remaining).all()
+                targets = db.query(OutboundTarget).filter(
+                    OutboundTarget.account_id == account.id,
+                    OutboundTarget.status == OutboundStatus.pending,
+                ).limit(remaining).all()
 
-            for i, target in enumerate(targets):
-                # Stagger sends: each target gets an independent jitter so they
-                # don't all fire at once and don't block the scheduler worker.
-                countdown = random.randint(60, 300) + i * 60
-                send_single_outbound.apply_async(args=[account.id, target.id], countdown=countdown)
-                logger.info(
-                    "account=%s scheduled outbound target_id=%d @%s in %ds",
-                    account.username, target.id, target.instagram_username, countdown,
+                logger.debug(
+                    "account=%s outbound: %d pending, %d remaining today",
+                    account.username, len(targets), remaining,
                 )
+
+                for i, target in enumerate(targets):
+                    # Stagger sends: each target gets an independent jitter so they
+                    # don't all fire at once and don't block the scheduler worker.
+                    countdown = random.randint(60, 300) + i * 60
+                    send_single_outbound.apply_async(args=[account.id, target.id], countdown=countdown)
+                    logger.info(
+                        "account=%s scheduled outbound target_id=%d @%s in %ds",
+                        account.username, target.id, target.instagram_username, countdown,
+                    )
+            except Exception as exc:
+                logger.error("send_outbound_messages: account=%s failed: %s", account.username, exc, exc_info=True)
     except Exception as exc:
         logger.error("send_outbound_messages failed: %s", exc, exc_info=True)
     finally:
@@ -582,7 +596,7 @@ def send_single_outbound(self, account_id: int, target_id: int):
             logger.warning("account=%s target_id=%d skipped — no message", account.username, target_id)
             return
 
-        today = date.today()
+        today = datetime.now(timezone.utc).date()
         thread_id = send_outbound_dm(account, target.instagram_username, message, db)
         if thread_id:
             target.status = OutboundStatus.sent
@@ -605,12 +619,13 @@ def send_single_outbound(self, account_id: int, target_id: int):
                 db.add(conv)
                 db.commit()
 
+            # Ensure stats row exists BEFORE uncommitted UPDATEs.
+            _get_or_create_daily_stats(db, account_id)
             db.execute(
                 sa_update(Account)
                 .where(Account.id == account_id)
                 .values(messages_today=Account.messages_today + 1)
             )
-            _get_or_create_daily_stats(db, account_id)
             db.execute(
                 sa_update(DailyStats)
                 .where(DailyStats.account_id == account_id, DailyStats.date == today)

@@ -8,7 +8,7 @@ const api = axios.create({
 })
 
 api.interceptors.request.use((config) => {
-  const key = localStorage.getItem(STORAGE_KEY) || import.meta.env.VITE_API_KEY || ''
+  const key = localStorage.getItem(STORAGE_KEY) || ''
   if (key) config.headers['X-API-Key'] = key
   return config
 })

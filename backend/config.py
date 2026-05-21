@@ -18,7 +18,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-cipher = Fernet(settings.ENCRYPTION_KEY.encode())
+try:
+    cipher = Fernet(settings.ENCRYPTION_KEY.encode())
+except Exception as _e:
+    print(
+        f"FATAL: ENCRYPTION_KEY is invalid — must be a 32-byte url-safe base64 key.\n"
+        f"Generate one with: python3 -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"\n"
+        f"Error: {_e}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def setup_logging() -> None:
